@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SleepAsRingConn</string>
+    <string name="health_connect_rationale">SleepAsRingConn needs Health Connect permissions to write your RingConn Gen 2 heart rate, HRV, SpO2, sleep sessions, and temperature data locally on your device without any cloud connection.</string>
+</resources>
