@@ -42,6 +42,16 @@ data class BulkRecord(
 ) {
     val timestampMillis: Long = timestampEpochSeconds * 1000L
 
+    val motionMagnitude: Int
+        get() {
+            var sum = 0
+            for (i in 0 until minOf(activityCounts.size, 5)) {
+                val v = activityCounts[i].toInt() and 0xFF
+                sum += (v - 1).coerceAtLeast(0)
+            }
+            return sum
+        }
+
     companion object {
         const val RECORD_LENGTH = 23
         const val EPOCH_SECONDS = 150

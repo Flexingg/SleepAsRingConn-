@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
 import com.randallengineering.sleepasringconn.service.RingSyncService
+import com.randallengineering.sleepasringconn.ui.screens.AnalyticsScreen
 import com.randallengineering.sleepasringconn.ui.screens.DashboardScreen
 import com.randallengineering.sleepasringconn.ui.screens.DiagnosticsScreen
 import com.randallengineering.sleepasringconn.ui.screens.IntegrationsScreen
@@ -25,6 +26,7 @@ import com.randallengineering.sleepasringconn.ui.theme.SleepAsRingConnTheme
 enum class Screen(val title: String, val icon: ImageVector) {
     Dashboard("Dashboard", Icons.Default.Dashboard),
     Sleep("Sleep", Icons.Default.Bedtime),
+    Analytics("Analytics", Icons.Default.Insights),
     Integrations("Integrations", Icons.Default.HealthAndSafety),
     Diagnostics("Console", Icons.Default.Terminal)
 }
@@ -67,6 +69,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToDiagnostics = { currentScreen = Screen.Diagnostics }
                             )
                             Screen.Sleep -> SleepScreen()
+                            Screen.Analytics -> AnalyticsScreen()
                             Screen.Integrations -> IntegrationsScreen()
                             Screen.Diagnostics -> DiagnosticsScreen()
                         }
