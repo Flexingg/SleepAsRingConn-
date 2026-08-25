@@ -386,6 +386,11 @@ object BleConnectionManager {
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4C)
 
                 if (records.isNotEmpty()) {
+                    val recentMotion = records.lastOrNull()?.motionMagnitude ?: 0
+                    if (recentMotion > 1) {
+                        SleepAsAndroidBridge.reportPhysicalMotion((recentMotion * 0.2f).coerceIn(0.2f, 1.5f))
+                    }
+
                     coroutineScope.launch {
                         appContext?.let { ctx ->
                             val db = AppDatabase.getDatabase(ctx)
