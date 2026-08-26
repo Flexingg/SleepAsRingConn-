@@ -41,6 +41,21 @@ fun DashboardScreen(
 
     var showDeviceSheet by remember { mutableStateOf(false) }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val motionSensorManager = remember { com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(context) }
+    val rawAccel by motionSensorManager.rawAcceleration.collectAsState()
+    val currentMagnitude by motionSensorManager.currentMagnitude.collectAsState()
+    val last10sMaxAccel by motionSensorManager.last10sMaxAcceleration.collectAsState()
+
+    DisposableEffect(Unit) {
+        motionSensorManager.start()
+        onDispose {
+            if (!com.randallengineering.sleepasringconn.sleepasandroid.SleepAsAndroidBridge.isTrackingActive) {
+                motionSensorManager.stop()
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -202,7 +217,108 @@ fun DashboardScreen(
             }
         }
 
-        // 3. Quick Action Controls
+        // 3. Accelerometer & Motion Telemetry (Sleep as Android Actigraphy)
+        item {
+            Text(
+                text = "Accelerometer & Actigraphy",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = "Motion & Accelerometer",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        // Sleep stage classification badge based on actigraphy
+                        val (stageText, stageColor) = when {
+                            last10sMaxAccel < 0.05f -> "Still (Deep/REM Stage)" to StepsGreen
+                            last10sMaxAccel in 0.05f..0.30f -> "Light Motion" to TempAmber
+                            else -> "Active (Awake Stage)" to HeartRateRed
+                        }
+
+                        Surface(
+                            color = stageColor.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = stageText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = stageColor
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surface
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("Live Δa", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("%.2f m/s²".format(currentMagnitude), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Surface(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surface
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("10s Peak (SaA)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("%.2f m/s²".format(last10sMaxAccel), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "3-Axis: X: %.2f · Y: %.2f · Z: %.2f m/s²".format(rawAccel.first, rawAccel.second, rawAccel.third),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // 4. Quick Action Controls
         item {
             Text(
                 text = "Controls & Actions",
@@ -250,7 +366,7 @@ fun DashboardScreen(
                         shape = RoundedCornerShape(16.dp)
                     ) {
                         Icon(
-                            if (isLiveMonitoring) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            if (isLiveMonitoring) Icons.Default.Stop else Icons.Default.Favorite,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
@@ -263,6 +379,22 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    FilledTonalButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            if (isLiveMonitoring) {
+                                BleConnectionManager.stopLiveMonitoring()
+                            } else {
+                                BleConnectionManager.startLiveMonitoring(hrMode = false)
+                            }
+                        },
+                        enabled = isConnected,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Icon(Icons.Default.Air, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Live SpO2")
+                    }
                     if (isRingLedOn) {
                         FilledTonalButton(
                             modifier = Modifier.weight(1f),

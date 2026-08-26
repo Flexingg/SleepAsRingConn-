@@ -44,10 +44,7 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
             }
 
             SleepAsAndroidBridge.ACTION_STOP_TRACKING -> {
-                SleepAsAndroidBridge.handleStopTracking()
-                CoroutineScope(Dispatchers.IO).launch {
-                    BleConnectionManager.stopLiveMonitoring()
-                }
+                SleepAsAndroidBridge.handleStopTracking(context.applicationContext)
             }
 
             SleepAsAndroidBridge.ACTION_SET_BATCH_SIZE -> {

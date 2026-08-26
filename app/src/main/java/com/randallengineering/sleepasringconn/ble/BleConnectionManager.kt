@@ -222,8 +222,11 @@ object BleConnectionManager {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            log("MTU changed to $mtu. Discovering services...")
-            gatt.discoverServices()
+            log("MTU changed to $mtu. Discovering services in 200ms...")
+            coroutineScope.launch {
+                delay(200)
+                gatt.discoverServices()
+            }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
@@ -236,7 +239,7 @@ object BleConnectionManager {
 
                     if (notifyChar != null) {
                         coroutineScope.launch {
-                            delay(100)
+                            delay(300)
                             enableNotification(gatt, notifyChar)
                         }
                     } else {
@@ -255,12 +258,19 @@ object BleConnectionManager {
                 log("Notify CCCD enabled! Initiating status handshake 01 00 00...")
                 _connectionState.value = "Connected & Authenticating"
                 coroutineScope.launch {
-                    delay(50)
+                    delay(100)
                     // Initial status read to prompt challenge response
                     sendCommand(RingProtocol.CMD_STATUS_0)
                 }
             } else {
-                log("onDescriptorWrite failed with status $status")
+                log("onDescriptorWrite returned status $status. Retrying in 400ms...")
+                coroutineScope.launch {
+                    delay(400)
+                    val dataService = gatt.getService(RingProtocol.DATA_SERVICE_UUID)
+                    dataService?.getCharacteristic(RingProtocol.NOTIFY_CHAR_UUID)?.let { notifyChar ->
+                        enableNotification(gatt, notifyChar)
+                    }
+                }
             }
         }
 
@@ -386,9 +396,48 @@ object BleConnectionManager {
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4C)
 
                 if (records.isNotEmpty()) {
+                    // Update latest live vitals from genuine ring records
+                    records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
+                        _liveHeartRate.value = hr
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendHeartRateData(ctx, floatArrayOf(hr.toFloat()))
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, hr = hr.toFloat())
+                            }
+                        }
+                    }
+
+                    records.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
+                        _liveSpo2.value = spo2
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
+                            }
+                        }
+                    }
+
+                    records.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, sdnnHrv = hrv.toFloat())
+                            }
+                        }
+                    }
+
+                    records.lastOrNull { it.respiratoryRate != null }?.respiratoryRate?.let { rr ->
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, respirationRate = rr.toFloat())
+                            }
+                        }
+                    }
+
                     val recentMotion = records.lastOrNull()?.motionMagnitude ?: 0
                     if (recentMotion > 1) {
-                        SleepAsAndroidBridge.reportPhysicalMotion((recentMotion * 0.2f).coerceIn(0.2f, 1.5f))
+                        val motionMps2 = (recentMotion * 0.25f).coerceIn(0.2f, 2.0f)
+                        appContext?.let { ctx ->
+                            com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx).reportRingMotion(motionMps2)
+                        }
                     }
 
                     coroutineScope.launch {
@@ -467,7 +516,7 @@ object BleConnectionManager {
                     val spo2 = packet[14].toInt() and 0xFF
                     if (spo2 in 70..100) {
                         _liveSpo2.value = spo2
-                        log("Live SpO2: $spo2 %")
+                        log("Live SpO2 (0x15): $spo2 %")
 
                         if (SleepAsAndroidBridge.isTrackingActive) {
                             appContext?.let { ctx ->
@@ -518,7 +567,7 @@ object BleConnectionManager {
         livePollJob?.cancel()
 
         coroutineScope.launch {
-            log("Starting continuous live measurement mode (${if (hrMode) "HR" else "SpO2"})...")
+            log("Starting live measurement mode (${if (hrMode) "HR" else "SpO2"})...")
             sendCommand(RingProtocol.CMD_STATUS_QUERY)
             delay(150)
             sendCommand(if (hrMode) RingProtocol.CMD_LIVE_HR_MODE else RingProtocol.CMD_LIVE_SPO2_MODE)
@@ -527,16 +576,26 @@ object BleConnectionManager {
             delay(150)
             sendCommand(RingProtocol.CMD_POLL)
 
-            // Continuous maintainer loop: queries live samples every 1.5 seconds and re-primes every 10s
+            // Maintainer loop: queries samples every 2s, does periodic mode refresh
             var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
-                    delay(1500)
+                    delay(2000)
                     tick++
                     sendCommand(RingProtocol.CMD_POLL)
-                    if (tick % 6 == 0) {
-                        // Keepalive re-prime
-                        sendCommand(if (hrMode) RingProtocol.CMD_LIVE_HR_MODE else RingProtocol.CMD_LIVE_SPO2_MODE)
+
+                    if (tick % 15 == 0) {
+                        // Quick SpO2 check
+                        sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
+                        sendCommand(RingProtocol.CMD_FETCH)
+                        delay(200)
+                        sendCommand(RingProtocol.CMD_POLL)
+                        delay(200)
+                        // Return to HR mode
+                        sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
+                        sendCommand(RingProtocol.CMD_FETCH)
+                    } else if (tick % 30 == 0) {
+                        // Refresh descriptor (temp, steps, battery)
                         sendCommand(RingProtocol.CMD_FETCH)
                     }
                 }
