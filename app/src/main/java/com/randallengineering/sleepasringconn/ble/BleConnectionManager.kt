@@ -390,6 +390,11 @@ object BleConnectionManager {
                         }
                     }
                 }
+
+                if (_isSyncing.value && opcode == 0x87) {
+                    // Record header during sync: advance to the next record
+                    sendCommand(RingProtocol.CMD_FETCH)
+                }
             }
 
             0x4C -> {
@@ -533,6 +538,13 @@ object BleConnectionManager {
 
             0x82 -> {
                 log("Sync open ACK (0x82): $hex")
+                val isEmptySignal = packet.size >= 2 && (packet[1] == 0xFF.toByte() || (packet.size >= 3 && packet[2] == 0x01.toByte()))
+                if (isEmptySignal) {
+                    log("Channel $currentSyncChannel reported empty/caught-up. Advancing...")
+                    advanceSyncChannel()
+                } else {
+                    sendCommand(RingProtocol.CMD_FETCH)
+                }
             }
 
             0x86 -> {
@@ -541,20 +553,7 @@ object BleConnectionManager {
 
             0x50 -> {
                 log("End of history stream (0x50) for channel $currentSyncChannel")
-                if (currentSyncChannel == RingProtocol.CHANNEL_SLEEP) {
-                    currentSyncChannel = RingProtocol.CHANNEL_ALL_DAY
-                    coroutineScope.launch {
-                        delay(400)
-                        log("Opening history sync on All-Day Channel (0x03)...")
-                        sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_ALL_DAY))
-                        sendCommand(RingProtocol.CMD_FETCH)
-                    }
-                } else {
-                    _isSyncing.value = false
-                    currentSyncChannel = null
-                    syncTimeoutJob?.cancel()
-                    log("Full history sync complete! All channels synced.")
-                }
+                advanceSyncChannel()
             }
 
             else -> {
@@ -564,26 +563,48 @@ object BleConnectionManager {
     }
 
     private var currentSyncChannel: Byte? = null
-    private var syncTimeoutJob: Job? = null
+    private var syncWatchdogJob: Job? = null
+
+    private fun advanceSyncChannel() {
+        if (currentSyncChannel == RingProtocol.CHANNEL_SLEEP) {
+            currentSyncChannel = RingProtocol.CHANNEL_ALL_DAY
+            coroutineScope.launch {
+                delay(300)
+                log("Opening history sync on All-Day Channel (0x03)...")
+                sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_ALL_DAY))
+                delay(100)
+                sendCommand(RingProtocol.CMD_FETCH)
+            }
+            startChannelWatchdog()
+        } else {
+            _isSyncing.value = false
+            currentSyncChannel = null
+            syncWatchdogJob?.cancel()
+            log("Full history sync complete! All channels synced.")
+        }
+    }
+
+    private fun startChannelWatchdog() {
+        syncWatchdogJob?.cancel()
+        syncWatchdogJob = coroutineScope.launch {
+            delay(4000) // If no pages or end-signal arrived after 4s, channel is empty
+            if (_isSyncing.value) {
+                log("Channel $currentSyncChannel quiet (no more pages). Advancing...")
+                advanceSyncChannel()
+            }
+        }
+    }
 
     fun syncHistory() {
         if (_isSyncing.value) return
         _isSyncing.value = true
         currentSyncChannel = RingProtocol.CHANNEL_SLEEP
-
-        syncTimeoutJob?.cancel()
-        syncTimeoutJob = coroutineScope.launch {
-            delay(20000)
-            if (_isSyncing.value) {
-                log("History sync timed out after 20s. Resetting state.")
-                _isSyncing.value = false
-                currentSyncChannel = null
-            }
-        }
+        startChannelWatchdog()
 
         coroutineScope.launch {
             log("Opening history sync on Sleep Channel (0x00)...")
             sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_SLEEP))
+            delay(100)
             sendCommand(RingProtocol.CMD_FETCH)
         }
     }
