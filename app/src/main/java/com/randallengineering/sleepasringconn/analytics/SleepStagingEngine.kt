@@ -92,41 +92,62 @@ object SleepStagingEngine {
         val sortedHr = hrValues.sorted()
         val floorHr = sortedHr[(sortedHr.size * 0.20).toInt().coerceIn(0, sortedHr.size - 1)]
         val medianHr = sortedHr[sortedHr.size / 2]
+        val sleepThresholdHr = medianHr + 4
 
-        val hrvValues = sorted.mapNotNull { it.hrvRmssd }
-        val medianHrv = if (hrvValues.isNotEmpty()) hrvValues.sorted()[hrvValues.size / 2] else 40
-
-        // Find sleep onset (first quiet run) and sleep offset (last quiet run)
-        val sleepIndices = sorted.mapIndexedNotNull { index, record ->
+        // 1. Identify sleep candidate epochs (resting HR & still actigraphy)
+        val isSleepList = sorted.map { record ->
             val hr = record.heartRate
             val mot = record.motionMagnitude
-            if (hr != null && mot <= 5 && hr <= medianHr + 8) index else null
+            hr != null && hr <= sleepThresholdHr && mot <= 5
         }
-        if (sleepIndices.isEmpty()) return null
 
-        val onsetIdx = maxOf(0, sleepIndices.first() - 6)
-        val offsetIdx = minOf(sorted.size - 1, sleepIndices.last() + 6)
+        // 2. Find consolidated Sleep Onset (first sustained run >= 5 epochs / 12.5m)
+        var onsetIdx: Int? = null
+        for (i in 0 until isSleepList.size - 5) {
+            if (isSleepList.subList(i, i + 5).all { it }) {
+                onsetIdx = maxOf(0, i - 2) // allow up to 5 min wind-down in bed
+                break
+            }
+        }
+        if (onsetIdx == null) return null
+
+        // 3. Find consolidated Final Wake / Offset (last sustained run >= 4 epochs / 10m)
+        var offsetIdx: Int? = null
+        for (i in isSleepList.size - 4 downTo onsetIdx + 1) {
+            if (isSleepList.subList(i, i + 4).all { it }) {
+                offsetIdx = minOf(isSleepList.size - 1, i + 5) // allow 5-10 min waking up
+                break
+            }
+        }
+        if (offsetIdx == null || offsetIdx <= onsetIdx + 8) return null
 
         val inBedRecords = sorted.subList(onsetIdx, offsetIdx + 1)
         if (inBedRecords.size < 12) return null
 
-        // Classify each epoch
+        val inBedHrs = inBedRecords.mapNotNull { it.heartRate }
+        val inBedMedHr = if (inBedHrs.isNotEmpty()) inBedHrs.sorted()[inBedHrs.size / 2] else medianHr
+        val inBedFloorHr = if (inBedHrs.isNotEmpty()) inBedHrs.sorted()[(inBedHrs.size * 0.20).toInt().coerceIn(0, inBedHrs.size - 1)] else floorHr
+
+        val inBedHrvs = inBedRecords.mapNotNull { it.hrvRmssd }
+        val inBedMedHrv = if (inBedHrvs.isNotEmpty()) inBedHrvs.sorted()[inBedHrvs.size / 2] else 40
+
+        // 4. Classify each epoch within the true bedtime window
         val rawStages = inBedRecords.map { record ->
             val motion = record.motionMagnitude
             val hr = record.heartRate
             val hrv = record.hrvRmssd
 
             when {
-                // High motion or clear daytime elevation -> AWAKE
-                hr == null || motion >= 15 || (motion >= 5 && hr > medianHr + 12) || hr > floorHr + 25 -> {
+                // High motion or clear awake HR elevation -> AWAKE
+                hr == null || motion >= 12 || (motion >= 4 && hr > inBedMedHr + 12) || hr > inBedFloorHr + 20 -> {
                     SleepStage.AWAKE
                 }
                 // Deep Sleep: Lowest nocturnal HR troughs, near-zero motion, calm HRV
-                motion <= 2 && hr <= medianHr && (hrv == null || hrv <= medianHrv + 10) -> {
+                motion <= 2 && hr <= inBedMedHr && (hrv == null || hrv <= inBedMedHrv + 10) -> {
                     SleepStage.DEEP
                 }
                 // REM Sleep: Muscle atonia (low motion), elevated HRV / HR fluctuation
-                motion <= 4 && ((hrv != null && hrv >= medianHrv + 4) || (hr in (medianHr + 1)..(medianHr + 8))) -> {
+                motion <= 4 && ((hrv != null && hrv >= inBedMedHrv + 4) || (hr in (inBedMedHr + 1)..(inBedMedHr + 8))) -> {
                     SleepStage.REM
                 }
                 // Light Sleep
