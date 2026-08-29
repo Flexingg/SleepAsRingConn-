@@ -97,15 +97,15 @@ object SleepStagingEngine {
         val medianHrv = if (hrvValues.isNotEmpty()) hrvValues.sorted()[hrvValues.size / 2] else 40
 
         // Find sleep onset (first quiet run) and sleep offset (last quiet run)
-        var onsetIdx = 0
-        while (onsetIdx < sorted.size - 6 && sorted[onsetIdx].motionMagnitude > 12) {
-            onsetIdx++
+        val sleepIndices = sorted.mapIndexedNotNull { index, record ->
+            val hr = record.heartRate
+            val mot = record.motionMagnitude
+            if (hr != null && mot <= 5 && hr <= medianHr + 8) index else null
         }
+        if (sleepIndices.isEmpty()) return null
 
-        var offsetIdx = sorted.size - 1
-        while (offsetIdx > onsetIdx + 6 && sorted[offsetIdx].motionMagnitude > 12) {
-            offsetIdx--
-        }
+        val onsetIdx = maxOf(0, sleepIndices.first() - 6)
+        val offsetIdx = minOf(sorted.size - 1, sleepIndices.last() + 6)
 
         val inBedRecords = sorted.subList(onsetIdx, offsetIdx + 1)
         if (inBedRecords.size < 12) return null
@@ -118,15 +118,15 @@ object SleepStagingEngine {
 
             when {
                 // High motion or clear daytime elevation -> AWAKE
-                motion >= 12 || (motion >= 4 && hr != null && hr > medianHr + 14) || (hr != null && hr > floorHr + 25) -> {
+                hr == null || motion >= 15 || (motion >= 5 && hr > medianHr + 12) || hr > floorHr + 25 -> {
                     SleepStage.AWAKE
                 }
                 // Deep Sleep: Lowest nocturnal HR troughs, near-zero motion, calm HRV
-                motion <= 2 && hr != null && hr <= medianHr && (hrv == null || hrv <= medianHrv + 10) -> {
+                motion <= 2 && hr <= medianHr && (hrv == null || hrv <= medianHrv + 10) -> {
                     SleepStage.DEEP
                 }
                 // REM Sleep: Muscle atonia (low motion), elevated HRV / HR fluctuation
-                motion <= 4 && ((hrv != null && hrv >= medianHrv + 4) || (hr != null && hr in (medianHr + 1)..(medianHr + 8))) -> {
+                motion <= 4 && ((hrv != null && hrv >= medianHrv + 4) || (hr in (medianHr + 1)..(medianHr + 8))) -> {
                     SleepStage.REM
                 }
                 // Light Sleep

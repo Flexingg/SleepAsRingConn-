@@ -44,12 +44,11 @@ data class BulkRecord(
 
     val motionMagnitude: Int
         get() {
-            var sum = 0
-            for (i in 0 until minOf(activityCounts.size, 5)) {
-                val v = activityCounts[i].toInt() and 0xFF
-                sum += (v - 1).coerceAtLeast(0)
-            }
-            return sum
+            if (activityCounts.isEmpty()) return 0
+            val sub = activityCounts.take(5).map { it.toInt() and 0xFF }
+            val minVal = sub.minOrNull() ?: 0
+            val maxVal = sub.maxOrNull() ?: 0
+            return maxVal - minVal
         }
 
     companion object {
