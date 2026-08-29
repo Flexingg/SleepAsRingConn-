@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,18 +44,21 @@ fun SleepScreen() {
     val context = LocalContext.current
     val database = remember { AppDatabase.getDatabase(context) }
     var selectedEpoch by remember { mutableStateOf<StagedEpoch?>(null) }
+    var selectedSessionIndex by remember { mutableIntStateOf(0) }
 
     val now = remember { System.currentTimeMillis() }
-    val past48h = remember { now - 48 * 60 * 60 * 1000L }
-    val epochEntities by database.epochDao().getEpochsSinceFlow(past48h).collectAsState(initial = emptyList())
+    val past30d = remember { now - 30 * 24 * 60 * 60 * 1000L }
+    val epochEntities by database.epochDao().getEpochsSinceFlow(past30d).collectAsState(initial = emptyList())
 
-    val sleepSession = remember(epochEntities) {
-        if (epochEntities.isEmpty()) null
+    val allSessions = remember(epochEntities) {
+        if (epochEntities.isEmpty()) emptyList()
         else {
             val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-            SleepStagingEngine.stageRecords(bulkRecords)
+            SleepStagingEngine.extractAllSleepSessions(bulkRecords)
         }
     }
+
+    val sleepSession = allSessions.getOrNull(selectedSessionIndex) ?: allSessions.firstOrNull()
 
     LazyColumn(
         modifier = Modifier
@@ -67,6 +72,48 @@ fun SleepScreen() {
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
+        }
+
+        // Night / Date Selector Chips
+        if (allSessions.isNotEmpty()) {
+            item {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(allSessions) { idx, sess ->
+                        val isSelected = (idx == selectedSessionIndex)
+                        val dateStr = if (idx == 0) {
+                            "Last Night"
+                        } else {
+                            SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(sess.startTimeMillis))
+                        }
+                        val durHours = sess.sleepDurationMinutes / 60
+                        val durMins = sess.sleepDurationMinutes % 60
+
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                selectedSessionIndex = idx
+                                selectedEpoch = null
+                            },
+                            label = {
+                                Column(modifier = Modifier.padding(vertical = 2.dp)) {
+                                    Text(dateStr, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                    Text(
+                                        "${durHours}h ${durMins}m • Score ${sess.sleepScore}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isSelected) SleepPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            leadingIcon = if (isSelected) {
+                                { Icon(Icons.Default.Bedtime, contentDescription = null, modifier = Modifier.size(16.dp), tint = SleepPurple) }
+                            } else null
+                        )
+                    }
+                }
+            }
         }
 
         if (sleepSession == null) {
@@ -100,7 +147,7 @@ fun SleepScreen() {
                 }
             }
         } else {
-            val session = sleepSession!!
+            val session = sleepSession
 
             // 1. Sleep Hero Summary Card
             item {

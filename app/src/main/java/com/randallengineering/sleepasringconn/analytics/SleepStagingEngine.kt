@@ -40,63 +40,105 @@ data class SleepSession(
 object SleepStagingEngine {
 
     /**
-     * Staging algorithm:
-     * 1. Extracts the most recent overnight sleep bout from multi-day history stream.
-     * 2. Uses the sleep session's internal HR floor, median, HRV RMSSD, and 5-bin actigraphy counts.
-     * 3. Classifies each 2.5-min epoch into AWAKE, LIGHT, DEEP, or REM.
-     * 4. Consolidates transient single-epoch stage flips to maintain physiological sleep cycles.
+     * Extracts and stages all sleep sessions across the provided records (e.g. past 7 days),
+     * sorted with the newest session first.
+     */
+    fun extractAllSleepSessions(records: List<BulkRecord>): List<SleepSession> {
+        val nonIdle = records.filter { it.layout != BulkRecordLayout.IDLE }.sortedBy { it.timestampMillis }
+        if (nonIdle.size < 12) return emptyList()
+
+        // 1. Partition records into nightly 24-hour buckets (from 6 PM to 3 PM next day)
+        val nightBuckets = mutableMapOf<String, MutableList<BulkRecord>>()
+        val cal = java.util.Calendar.getInstance()
+
+        for (record in nonIdle) {
+            cal.timeInMillis = record.timestampMillis
+            val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
+            
+            // If between midnight and 3 PM, belongs to the night that started yesterday
+            val sessionDate = if (hour < 15) {
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+                java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+            } else {
+                java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(cal.time)
+            }
+            nightBuckets.getOrPut(sessionDate) { mutableListOf() }.add(record)
+        }
+
+        // 2. Stage each night independently
+        val sessions = mutableListOf<SleepSession>()
+        for ((_, nightRecords) in nightBuckets) {
+            stageNight(nightRecords)?.let { sessions.add(it) }
+        }
+
+        return sessions.sortedByDescending { it.startTimeMillis }
+    }
+
+    /**
+     * Backward-compatible helper: returns the latest sleep session.
      */
     fun stageRecords(records: List<BulkRecord>): SleepSession? {
-        val nonIdle = records.filter { it.layout != BulkRecordLayout.IDLE }.sortedBy { it.timestampMillis }
-        if (nonIdle.size < 12) return null
+        val all = extractAllSleepSessions(records)
+        return all.firstOrNull()
+    }
 
-        // 1. Extract the latest overnight sleep session cluster
-        val sessionRecords = extractLatestSleepSession(nonIdle) ?: return null
-        if (sessionRecords.size < 12) return null
+    private fun stageNight(records: List<BulkRecord>): SleepSession? {
+        if (records.size < 12) return null
 
-        val hrValues = sessionRecords.mapNotNull { it.heartRate }
+        val sorted = records.sortedBy { it.timestampMillis }
+        val hrValues = sorted.mapNotNull { it.heartRate }
         if (hrValues.isEmpty()) return null
 
         val sortedHr = hrValues.sorted()
         val floorHr = sortedHr[(sortedHr.size * 0.20).toInt().coerceIn(0, sortedHr.size - 1)]
         val medianHr = sortedHr[sortedHr.size / 2]
 
-        val hrvValues = sessionRecords.mapNotNull { it.hrvRmssd }
+        val hrvValues = sorted.mapNotNull { it.hrvRmssd }
         val medianHrv = if (hrvValues.isNotEmpty()) hrvValues.sorted()[hrvValues.size / 2] else 40
 
-        // 2. Initial Stage Classification
-        val initialStages = mutableListOf<SleepStage>()
+        // Find sleep onset (first quiet run) and sleep offset (last quiet run)
+        var onsetIdx = 0
+        while (onsetIdx < sorted.size - 6 && sorted[onsetIdx].motionMagnitude > 12) {
+            onsetIdx++
+        }
 
-        for (record in sessionRecords) {
+        var offsetIdx = sorted.size - 1
+        while (offsetIdx > onsetIdx + 6 && sorted[offsetIdx].motionMagnitude > 12) {
+            offsetIdx--
+        }
+
+        val inBedRecords = sorted.subList(onsetIdx, offsetIdx + 1)
+        if (inBedRecords.size < 12) return null
+
+        // Classify each epoch
+        val rawStages = inBedRecords.map { record ->
             val motion = record.motionMagnitude
             val hr = record.heartRate
             val hrv = record.hrvRmssd
 
-            val stage = when {
-                // High motion or elevated heart rate indicates wakefulness
-                motion >= 15 || (motion >= 5 && hr != null && hr > medianHr + 12) || (hr != null && hr > floorHr + 22 && motion >= 3) -> {
+            when {
+                // High motion or clear daytime elevation -> AWAKE
+                motion >= 12 || (motion >= 4 && hr != null && hr > medianHr + 14) || (hr != null && hr > floorHr + 25) -> {
                     SleepStage.AWAKE
                 }
-                // Deep Sleep: Near-zero motion, lowest heart rate trough, stable low-variance HRV
-                motion <= 2 && hr != null && hr <= medianHr && (hrv == null || hrv <= medianHrv + 12) -> {
+                // Deep Sleep: Lowest nocturnal HR troughs, near-zero motion, calm HRV
+                motion <= 2 && hr != null && hr <= medianHr && (hrv == null || hrv <= medianHrv + 10) -> {
                     SleepStage.DEEP
                 }
-                // REM Sleep: Muscle atonia (low motion), elevated HRV / heart rate fluctuation
-                motion <= 4 && ((hrv != null && hrv >= medianHrv + 5) || (hr != null && hr in (medianHr + 1)..(medianHr + 8))) -> {
+                // REM Sleep: Muscle atonia (low motion), elevated HRV / HR fluctuation
+                motion <= 4 && ((hrv != null && hrv >= medianHrv + 4) || (hr != null && hr in (medianHr + 1)..(medianHr + 8))) -> {
                     SleepStage.REM
                 }
-                // Light Sleep: Baseline restorative sleep
+                // Light Sleep
                 else -> {
                     SleepStage.LIGHT
                 }
             }
-            initialStages.add(stage)
         }
 
-        // 3. Stage Consolidation (smooth 1-epoch jitter)
-        val smoothedStages = smoothStages(initialStages)
+        val smoothedStages = smoothStages(rawStages)
 
-        val stagedEpochs = sessionRecords.mapIndexed { index, record ->
+        val stagedEpochs = inBedRecords.mapIndexed { index, record ->
             StagedEpoch(
                 timestampMillis = record.timestampMillis,
                 stage = smoothedStages[index],
@@ -117,11 +159,13 @@ object SleepStagingEngine {
         val deepMinutes = stagedEpochs.count { it.stage == SleepStage.DEEP } * 5 / 2
         val remMinutes = stagedEpochs.count { it.stage == SleepStage.REM } * 5 / 2
 
-        // Actual sleep duration EXCLUDES awake time (only Light + Deep + REM)
         val sleepDurationMinutes = lightMinutes + deepMinutes + remMinutes
+        if (sleepDurationMinutes < 15 && totalInBedMinutes < 30) return null
 
-        val avgHr = if (hrValues.isNotEmpty()) hrValues.average().toInt() else null
-        val avgHrv = if (hrvValues.isNotEmpty()) hrvValues.average().toInt() else null
+        val inBedHr = stagedEpochs.mapNotNull { it.heartRate }
+        val avgHr = if (inBedHr.isNotEmpty()) inBedHr.average().toInt() else null
+        val inBedHrv = stagedEpochs.mapNotNull { it.hrvRmssd }
+        val avgHrv = if (inBedHrv.isNotEmpty()) inBedHrv.average().toInt() else null
         val spo2Values = stagedEpochs.mapNotNull { it.spo2 }
         val avgSpo2 = if (spo2Values.isNotEmpty()) spo2Values.average().toInt() else null
         val rrValues = stagedEpochs.mapNotNull { it.respiratoryRate }
@@ -145,76 +189,6 @@ object SleepStagingEngine {
             sleepScore = score,
             epochs = stagedEpochs
         )
-    }
-
-    /**
-     * Extracts the most recent continuous sleep session from all records in history.
-     * Clusters consecutive low-motion / sleep-vitals records (allowing brief awakenings <= 30m).
-     */
-    private fun extractLatestSleepSession(records: List<BulkRecord>): List<BulkRecord>? {
-        if (records.isEmpty()) return null
-
-        // Group into candidate bouts
-        val bouts = mutableListOf<MutableList<BulkRecord>>()
-        var currentBout = mutableListOf<BulkRecord>()
-        var lastSleepTimestamp = 0L
-
-        for (record in records) {
-            val isRestCandidate = record.layout == BulkRecordLayout.SLEEP_VITALS ||
-                    (record.motionMagnitude <= 8 && record.heartRate != null)
-
-            if (currentBout.isEmpty()) {
-                if (isRestCandidate) {
-                    currentBout.add(record)
-                    lastSleepTimestamp = record.timestampMillis
-                }
-            } else {
-                val gapMinutes = (record.timestampMillis - lastSleepTimestamp) / 60_000L
-                if (gapMinutes <= 45) { // Allow up to 45 minutes of restless/awake gap within the night
-                    currentBout.add(record)
-                    if (isRestCandidate) {
-                        lastSleepTimestamp = record.timestampMillis
-                    }
-                } else {
-                    if (currentBout.size >= 16) { // Minimum 40 minutes to consider a bout
-                        bouts.add(currentBout)
-                    }
-                    currentBout = if (isRestCandidate) mutableListOf(record) else mutableListOf()
-                    lastSleepTimestamp = if (isRestCandidate) record.timestampMillis else 0L
-                }
-            }
-        }
-
-        if (currentBout.size >= 16) {
-            bouts.add(currentBout)
-        }
-
-        // Return the latest qualifying major sleep bout (or the largest recent one)
-        val candidate = bouts.lastOrNull { bout ->
-            val durationMinutes = ((bout.last().timestampMillis - bout.first().timestampMillis) / 60_000L)
-            durationMinutes >= 60 // At least 1 hour of sleep
-        } ?: bouts.maxByOrNull { it.size } ?: records.takeLast(288) // fallback to last 12h
-
-        // Trim leading and trailing prolonged awake runs (> 30 min of awake before sleep or after waking up)
-        return trimSleepBoutEdges(candidate)
-    }
-
-    private fun trimSleepBoutEdges(bout: List<BulkRecord>): List<BulkRecord> {
-        if (bout.size < 12) return bout
-        var startIdx = 0
-        var endIdx = bout.size - 1
-
-        // Trim leading daytime/active epochs before sleep onset
-        while (startIdx < bout.size - 6 && bout[startIdx].motionMagnitude > 12) {
-            startIdx++
-        }
-
-        // Trim trailing active epochs after final wake
-        while (endIdx > startIdx + 6 && bout[endIdx].motionMagnitude > 12) {
-            endIdx--
-        }
-
-        return bout.subList(startIdx, endIdx + 1)
     }
 
     private fun smoothStages(stages: List<SleepStage>): List<SleepStage> {
