@@ -18,6 +18,12 @@ interface EpochDao {
     @Query("SELECT * FROM epoch_records WHERE timestampMillis >= :since ORDER BY timestampMillis ASC")
     suspend fun getEpochsSince(since: Long): List<EpochEntity>
 
+    @Query("SELECT * FROM epoch_records WHERE timestampMillis >= :since ORDER BY timestampMillis ASC")
+    fun getEpochsSinceFlow(since: Long): Flow<List<EpochEntity>>
+
+    @Query("SELECT * FROM epoch_records WHERE timestampMillis BETWEEN :start AND :end ORDER BY timestampMillis ASC")
+    fun getEpochsBetweenFlow(start: Long, end: Long): Flow<List<EpochEntity>>
+
     @Query("SELECT * FROM epoch_records WHERE isSyncedToHealthConnect = 0 ORDER BY timestampMillis ASC LIMIT 500")
     suspend fun getUnsyncedEpochs(): List<EpochEntity>
 
@@ -41,6 +47,9 @@ interface DeviceStatusDao {
 
     @Query("SELECT * FROM device_status_logs WHERE timestampMillis >= :since ORDER BY timestampMillis ASC")
     suspend fun getStatusLogsSince(since: Long): List<DeviceStatusEntity>
+
+    @Query("SELECT * FROM device_status_logs WHERE timestampMillis >= :since ORDER BY timestampMillis ASC")
+    fun getStatusLogsSinceFlow(since: Long): Flow<List<DeviceStatusEntity>>
 
     @Query("SELECT * FROM device_status_logs WHERE timestampMillis BETWEEN :start AND :end ORDER BY timestampMillis ASC")
     suspend fun getStatusLogsBetween(start: Long, end: Long): List<DeviceStatusEntity>

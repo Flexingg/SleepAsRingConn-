@@ -49,6 +49,9 @@ object BleConnectionManager {
     private val _liveSpo2 = MutableStateFlow<Int?>(null)
     val liveSpo2 = _liveSpo2.asStateFlow()
 
+    private val _liveHrv = MutableStateFlow<Int?>(null)
+    val liveHrv = _liveHrv.asStateFlow()
+
     private val _isLiveMonitoring = MutableStateFlow(false)
     val isLiveMonitoring = _isLiveMonitoring.asStateFlow()
 
@@ -417,6 +420,7 @@ object BleConnectionManager {
                     }
 
                     records.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
+                        _liveHrv.value = hrv
                         if (SleepAsAndroidBridge.isTrackingActive) {
                             appContext?.let { ctx ->
                                 SleepAsAndroidBridge.sendExtraSensorData(ctx, sdnnHrv = hrv.toFloat())
@@ -536,8 +540,21 @@ object BleConnectionManager {
             }
 
             0x50 -> {
-                log("End of history stream (0x50)")
-                _isSyncing.value = false
+                log("End of history stream (0x50) for channel $currentSyncChannel")
+                if (currentSyncChannel == RingProtocol.CHANNEL_SLEEP) {
+                    currentSyncChannel = RingProtocol.CHANNEL_ALL_DAY
+                    coroutineScope.launch {
+                        delay(400)
+                        log("Opening history sync on All-Day Channel (0x03)...")
+                        sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_ALL_DAY))
+                        sendCommand(RingProtocol.CMD_FETCH)
+                    }
+                } else {
+                    _isSyncing.value = false
+                    currentSyncChannel = null
+                    syncTimeoutJob?.cancel()
+                    log("Full history sync complete! All channels synced.")
+                }
             }
 
             else -> {
@@ -546,18 +563,27 @@ object BleConnectionManager {
         }
     }
 
+    private var currentSyncChannel: Byte? = null
+    private var syncTimeoutJob: Job? = null
+
     fun syncHistory() {
         if (_isSyncing.value) return
         _isSyncing.value = true
+        currentSyncChannel = RingProtocol.CHANNEL_SLEEP
+
+        syncTimeoutJob?.cancel()
+        syncTimeoutJob = coroutineScope.launch {
+            delay(20000)
+            if (_isSyncing.value) {
+                log("History sync timed out after 20s. Resetting state.")
+                _isSyncing.value = false
+                currentSyncChannel = null
+            }
+        }
+
         coroutineScope.launch {
             log("Opening history sync on Sleep Channel (0x00)...")
             sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_SLEEP))
-            sendCommand(RingProtocol.CMD_FETCH)
-
-            delay(3000)
-
-            log("Opening history sync on All-Day Channel (0x03)...")
-            sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_ALL_DAY))
             sendCommand(RingProtocol.CMD_FETCH)
         }
     }

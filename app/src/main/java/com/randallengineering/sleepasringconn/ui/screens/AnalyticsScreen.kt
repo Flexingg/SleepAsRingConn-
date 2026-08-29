@@ -59,25 +59,15 @@ fun AnalyticsScreen() {
 
     var selectedRange by remember { mutableStateOf(TimeRange.LAST_24_HOURS) }
     var selectedCategory by remember { mutableStateOf(MetricCategory.ALL) }
-    var isLoading by remember { mutableStateOf(true) }
 
-    var epochList by remember { mutableStateOf<List<BulkRecord>>(emptyList()) }
-    var statusLogs by remember { mutableStateOf<List<DeviceStatusEntity>>(emptyList()) }
+    val now = remember { System.currentTimeMillis() }
+    val start = now - selectedRange.durationMillis
 
-    LaunchedEffect(selectedRange) {
-        isLoading = true
-        withContext(Dispatchers.IO) {
-            val now = System.currentTimeMillis()
-            val start = now - selectedRange.durationMillis
+    val rawEpochs by database.epochDao().getEpochsSinceFlow(start).collectAsState(initial = emptyList())
+    val statusLogs by database.deviceStatusDao().getStatusLogsSinceFlow(start).collectAsState(initial = emptyList())
 
-            val rawEpochs = database.epochDao().getEpochsSince(start)
-            val parsed = rawEpochs.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-            val statuses = database.deviceStatusDao().getStatusLogsSince(start)
-
-            epochList = parsed
-            statusLogs = statuses
-            isLoading = false
-        }
+    val epochList = remember(rawEpochs) {
+        rawEpochs.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
     }
 
     LazyColumn(
@@ -129,13 +119,7 @@ fun AnalyticsScreen() {
             }
         }
 
-        if (isLoading) {
-            item {
-                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            }
-        } else if (epochList.isEmpty() && statusLogs.isEmpty()) {
+        if (epochList.isEmpty() && statusLogs.isEmpty()) {
             item {
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -234,23 +218,31 @@ fun HeartRateAnalyticsCard(epochs: List<BulkRecord>) {
                     MetricStatBadge("Avg HR", "${hrValues.average().toInt()} BPM", HeartRateRed)
                     MetricStatBadge("Max HR", "${hrValues.maxOrNull()} BPM", HeartRateRed)
                 }
-                if (hrvValues.isNotEmpty()) {
+            }
+
+            if (hrvValues.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    MetricStatBadge("Min HRV", "${hrvValues.minOrNull()} ms", SleepPurple)
                     MetricStatBadge("Avg HRV", "${hrvValues.average().toInt()} ms", SleepPurple)
+                    MetricStatBadge("Max HRV", "${hrvValues.maxOrNull()} ms", SleepPurple)
                 }
             }
 
-            if (hrRecords.isEmpty()) {
-                Text("No heart rate points in this window.", style = MaterialTheme.typography.bodySmall)
+            if (hrRecords.isEmpty() && hrvRecords.isEmpty()) {
+                Text("No heart rate or HRV points in this window.", style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Tap the chart to inspect points.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Tap the chart to inspect points (Red: HR, Purple: HRV).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 InteractiveLineChart(
                     dataPoints = hrRecords.map { it.timestampMillis to it.heartRate!!.toFloat() },
                     secondaryPoints = hrvRecords.map { it.timestampMillis to it.hrvRmssd!!.toFloat() },
                     primaryColor = HeartRateRed,
                     secondaryColor = SleepPurple,
-                    minVal = (hrValues.minOrNull() ?: 40).toFloat() - 5f,
-                    maxVal = (hrValues.maxOrNull() ?: 120).toFloat() + 5f,
+                    minVal = ((hrValues + hrvValues).minOrNull() ?: 40).toFloat() - 5f,
+                    maxVal = ((hrValues + hrvValues).maxOrNull() ?: 120).toFloat() + 5f,
                     onPointSelected = { ts ->
                         selectedRecord = epochs.minByOrNull { kotlin.math.abs(it.timestampMillis - ts) }
                     }
@@ -269,7 +261,7 @@ fun HeartRateAnalyticsCard(epochs: List<BulkRecord>) {
                             val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(rec.timestampMillis))
                             Text(timeStr, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                             rec.heartRate?.let { Text("HR: $it BPM", color = HeartRateRed, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
-                            rec.hrvRmssd?.let { Text("HRV: ${it}ms", color = SleepPurple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
+                            rec.hrvRmssd?.let { Text("HRV: ${it} ms", color = SleepPurple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                 }

@@ -34,6 +34,7 @@ fun DashboardScreen(
     val deviceStatus by BleConnectionManager.latestDeviceStatus.collectAsState()
     val liveHr by BleConnectionManager.liveHeartRate.collectAsState()
     val liveSpo2 by BleConnectionManager.liveSpo2.collectAsState()
+    val liveHrv by BleConnectionManager.liveHrv.collectAsState()
     val isLiveMonitoring by BleConnectionManager.isLiveMonitoring.collectAsState()
     val isSyncing by BleConnectionManager.isSyncing.collectAsState()
     val isRingLedOn by BleConnectionManager.isRingLedOn.collectAsState()
@@ -180,12 +181,12 @@ fun DashboardScreen(
 
                 MetricCard(
                     modifier = Modifier.weight(1f),
-                    title = "Blood Oxygen",
-                    value = liveSpo2?.toString() ?: "--",
-                    unit = "%",
-                    icon = Icons.Default.Air,
-                    color = Spo2Blue,
-                    isLive = isLiveMonitoring
+                    title = "HRV (RMSSD)",
+                    value = liveHrv?.toString() ?: "--",
+                    unit = "ms",
+                    icon = Icons.Default.MonitorHeart,
+                    color = Color(0xFF9C27B0),
+                    isLive = isConnected
                 )
             }
         }
@@ -197,6 +198,16 @@ fun DashboardScreen(
             ) {
                 MetricCard(
                     modifier = Modifier.weight(1f),
+                    title = "Blood Oxygen",
+                    value = liveSpo2?.toString() ?: "--",
+                    unit = "%",
+                    icon = Icons.Default.Air,
+                    color = Spo2Blue,
+                    isLive = isLiveMonitoring
+                )
+
+                MetricCard(
+                    modifier = Modifier.weight(1f),
                     title = "Skin Temp",
                     value = deviceStatus?.skinTemperature?.let { "%.1f".format(it.celsius) } ?: "--",
                     unit = "°C",
@@ -204,7 +215,14 @@ fun DashboardScreen(
                     color = TempAmber,
                     isLive = isConnected
                 )
+            }
+        }
 
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 MetricCard(
                     modifier = Modifier.weight(1f),
                     title = "Steps (15m)",

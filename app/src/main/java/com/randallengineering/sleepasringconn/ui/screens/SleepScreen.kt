@@ -41,19 +41,17 @@ import java.util.*
 fun SleepScreen() {
     val context = LocalContext.current
     val database = remember { AppDatabase.getDatabase(context) }
-    var sleepSession by remember { mutableStateOf<SleepSession?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
     var selectedEpoch by remember { mutableStateOf<StagedEpoch?>(null) }
 
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            val now = System.currentTimeMillis()
-            val past24h = now - 24 * 60 * 60 * 1000L
-            val epochEntities = database.epochDao().getEpochsBetween(past24h, now)
+    val now = remember { System.currentTimeMillis() }
+    val past48h = remember { now - 48 * 60 * 60 * 1000L }
+    val epochEntities by database.epochDao().getEpochsSinceFlow(past48h).collectAsState(initial = emptyList())
+
+    val sleepSession = remember(epochEntities) {
+        if (epochEntities.isEmpty()) null
+        else {
             val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-            val staged = SleepStagingEngine.stageRecords(bulkRecords)
-            sleepSession = staged
-            isLoading = false
+            SleepStagingEngine.stageRecords(bulkRecords)
         }
     }
 
@@ -71,13 +69,7 @@ fun SleepScreen() {
             )
         }
 
-        if (isLoading) {
-            item {
-                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            }
-        } else if (sleepSession == null) {
+        if (sleepSession == null) {
             item {
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
