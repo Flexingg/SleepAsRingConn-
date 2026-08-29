@@ -74,7 +74,7 @@ fun SleepScreen() {
             )
         }
 
-        // Night / Date Selector Chips
+        // Night & Nap / Date Selector Chips
         if (allSessions.isNotEmpty()) {
             item {
                 LazyRow(
@@ -83,13 +83,20 @@ fun SleepScreen() {
                 ) {
                     itemsIndexed(allSessions) { idx, sess ->
                         val isSelected = (idx == selectedSessionIndex)
-                        val dateStr = if (idx == 0) {
-                            "Last Night"
-                        } else {
-                            SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(sess.startTimeMillis))
-                        }
                         val durHours = sess.sleepDurationMinutes / 60
                         val durMins = sess.sleepDurationMinutes % 60
+                        val durText = if (durHours > 0) "${durHours}h ${durMins}m" else "${durMins}m"
+
+                        val dateStr = when {
+                            sess.isNap -> {
+                                val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(sess.startTimeMillis))
+                                "$timeStr (${sess.sessionLabel})"
+                            }
+                            idx == 0 -> "Last Night"
+                            else -> SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(sess.startTimeMillis))
+                        }
+
+                        val chipTint = if (sess.isNap) Color(0xFFFFA000) else SleepPurple
 
                         FilterChip(
                             selected = isSelected,
@@ -101,15 +108,20 @@ fun SleepScreen() {
                                 Column(modifier = Modifier.padding(vertical = 2.dp)) {
                                     Text(dateStr, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
                                     Text(
-                                        "${durHours}h ${durMins}m • Score ${sess.sleepScore}",
+                                        "$durText • Score ${sess.sleepScore}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isSelected) SleepPurple else MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isSelected) chipTint else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             },
-                            leadingIcon = if (isSelected) {
-                                { Icon(Icons.Default.Bedtime, contentDescription = null, modifier = Modifier.size(16.dp), tint = SleepPurple) }
-                            } else null
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (sess.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (isSelected) chipTint else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         )
                     }
                 }
@@ -134,12 +146,12 @@ fun SleepScreen() {
                             modifier = Modifier.size(48.dp)
                         )
                         Text(
-                            text = "No sleep session recorded yet",
+                            text = "No sleep or nap recorded yet",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Wear your RingConn Gen 2 overnight. The app will sync your sleep stages, resting HR dip, HRV, and SpO2 trends locally.",
+                            text = "Wear your RingConn Gen 2 overnight or during naps. The app will sync your sleep stages, resting HR dip, HRV, and SpO2 trends locally.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -149,7 +161,7 @@ fun SleepScreen() {
         } else {
             val session = sleepSession
 
-            // 1. Sleep Hero Summary Card
+            // 1. Sleep / Nap Hero Summary Card
             item {
                 ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
@@ -162,26 +174,65 @@ fun SleepScreen() {
                         modifier = Modifier.padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        // Badge for Session Type
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (session.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
+                                contentDescription = null,
+                                tint = if (session.isNap) Color(0xFFFFA000) else SleepPurple,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = if (session.isNap) session.sessionLabel.uppercase() else "OVERNIGHT SLEEP",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
+                            )
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text("Sleep Score", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${session.sleepScore}", style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, color = SleepPurple)
+                                Text(
+                                    if (session.isNap) "Recovery Score" else "Sleep Score",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "${session.sleepScore}",
+                                    style = MaterialTheme.typography.displayMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
+                                )
                             }
 
                             Column(horizontalAlignment = Alignment.End) {
-                                Text("Actual Sleep", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    if (session.isNap) "Nap Duration" else "Actual Sleep",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                                 val sleepHours = session.sleepDurationMinutes / 60
                                 val sleepMins = session.sleepDurationMinutes % 60
-                                Text("${sleepHours}h ${sleepMins}m", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                val sleepText = if (sleepHours > 0) "${sleepHours}h ${sleepMins}m" else "${sleepMins}m"
+                                Text(
+                                    sleepText,
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                                 val bedHours = session.totalInBedMinutes / 60
                                 val bedMins = session.totalInBedMinutes % 60
+                                val bedText = if (bedHours > 0) "${bedHours}h ${bedMins}m" else "${bedMins}m"
                                 val efficiency = if (session.totalInBedMinutes > 0) ((session.sleepDurationMinutes.toFloat() / session.totalInBedMinutes) * 100).toInt() else 0
                                 Text(
-                                    "In Bed: ${bedHours}h ${bedMins}m • Eff: $efficiency%",
+                                    "In Bed: $bedText • Eff: $efficiency%",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

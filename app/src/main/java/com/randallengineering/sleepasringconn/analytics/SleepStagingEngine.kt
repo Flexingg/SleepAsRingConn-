@@ -34,18 +34,20 @@ data class SleepSession(
     val averageSpo2: Int?,
     val averageRespiratoryRate: Double?,
     val sleepScore: Int,
-    val epochs: List<StagedEpoch>
+    val epochs: List<StagedEpoch>,
+    val isNap: Boolean = false,
+    val sessionLabel: String = if (isNap) "Daytime Nap" else "Overnight Sleep"
 )
 
 object SleepStagingEngine {
 
     /**
-     * Extracts and stages all sleep sessions across the provided records (e.g. past 7 days),
-     * sorted with the newest session first.
+     * Extracts and stages all sleep sessions across the provided records (e.g. past 7-30 days),
+     * including overnight sleep sessions and daytime naps, sorted with newest first.
      */
     fun extractAllSleepSessions(records: List<BulkRecord>): List<SleepSession> {
         val nonIdle = records.filter { it.layout != BulkRecordLayout.IDLE }.sortedBy { it.timestampMillis }
-        if (nonIdle.size < 12) return emptyList()
+        if (nonIdle.size < 6) return emptyList()
 
         // 1. Partition records into nightly 24-hour buckets (from 6 PM to 3 PM next day)
         val nightBuckets = mutableMapOf<String, MutableList<BulkRecord>>()
@@ -65,13 +67,20 @@ object SleepStagingEngine {
             nightBuckets.getOrPut(sessionDate) { mutableListOf() }.add(record)
         }
 
-        // 2. Stage each night independently
-        val sessions = mutableListOf<SleepSession>()
-        for ((_, nightRecords) in nightBuckets) {
-            stageNight(nightRecords)?.let { sessions.add(it) }
+        // 2. Stage each night & detect naps
+        val allSessions = mutableListOf<SleepSession>()
+        for ((_, bucketRecords) in nightBuckets) {
+            val mainSleep = stageNight(bucketRecords)
+            if (mainSleep != null) {
+                allSessions.add(mainSleep)
+            }
+
+            // Extract naps outside of main sleep
+            val naps = extractNaps(bucketRecords, mainSleep)
+            allSessions.addAll(naps)
         }
 
-        return sessions.sortedByDescending { it.startTimeMillis }
+        return allSessions.sortedByDescending { it.startTimeMillis }
     }
 
     /**
@@ -279,5 +288,127 @@ object SleepStagingEngine {
         }
 
         return score.toInt().coerceIn(0, 100)
+    }
+
+    private fun extractNaps(records: List<BulkRecord>, mainSleep: SleepSession?): List<SleepSession> {
+        val outsideRecords = records.filter { record ->
+            if (mainSleep == null) true
+            else {
+                val t = record.timestampMillis
+                t < (mainSleep.startTimeMillis - 15 * 60 * 1000L) || t > (mainSleep.endTimeMillis + 15 * 60 * 1000L)
+            }
+        }.sortedBy { it.timestampMillis }
+
+        if (outsideRecords.size < 6) return emptyList()
+
+        val hrValues = outsideRecords.mapNotNull { it.heartRate }
+        if (hrValues.isEmpty()) return emptyList()
+        val medianHr = hrValues.sorted()[hrValues.size / 2]
+        val sleepThresholdHr = medianHr + 4
+
+        val naps = mutableListOf<SleepSession>()
+        var currentNapEpochs = mutableListOf<BulkRecord>()
+
+        for (record in outsideRecords) {
+            val hr = record.heartRate
+            val mot = record.motionMagnitude
+            val isResting = hr != null && hr <= sleepThresholdHr && mot <= 5
+
+            if (isResting) {
+                currentNapEpochs.add(record)
+            } else {
+                if (currentNapEpochs.size >= 6) { // >= 15 min
+                    stageNapSession(currentNapEpochs)?.let { naps.add(it) }
+                }
+                currentNapEpochs = mutableListOf()
+            }
+        }
+
+        if (currentNapEpochs.size >= 6) {
+            stageNapSession(currentNapEpochs)?.let { naps.add(it) }
+        }
+
+        return naps
+    }
+
+    private fun stageNapSession(napRecords: List<BulkRecord>): SleepSession? {
+        if (napRecords.size < 6) return null
+
+        val hrValues = napRecords.mapNotNull { it.heartRate }
+        if (hrValues.isEmpty()) return null
+        val medHr = hrValues.sorted()[hrValues.size / 2]
+        val floorHr = hrValues.sorted()[(hrValues.size * 0.20).toInt().coerceIn(0, hrValues.size - 1)]
+
+        val hrvValues = napRecords.mapNotNull { it.hrvRmssd }
+        val medHrv = if (hrvValues.isNotEmpty()) hrvValues.sorted()[hrvValues.size / 2] else 40
+
+        val rawStages = napRecords.map { record ->
+            val mot = record.motionMagnitude
+            val hr = record.heartRate
+            val hrv = record.hrvRmssd
+
+            when {
+                hr == null || mot >= 10 || (mot >= 4 && hr > medHr + 10) -> SleepStage.AWAKE
+                mot <= 2 && hr <= medHr && (hrv == null || hrv <= medHrv + 8) -> SleepStage.DEEP
+                mot <= 4 && ((hrv != null && hrv >= medHrv + 4) || (hr in (medHr + 1)..(medHr + 6))) -> SleepStage.REM
+                else -> SleepStage.LIGHT
+            }
+        }
+
+        val smoothed = smoothStages(rawStages)
+        val stagedEpochs = napRecords.mapIndexed { idx, record ->
+            StagedEpoch(
+                timestampMillis = record.timestampMillis,
+                stage = smoothed[idx],
+                heartRate = record.heartRate,
+                hrvRmssd = record.hrvRmssd,
+                spo2 = record.spo2Percent,
+                respiratoryRate = record.respiratoryRate,
+                motionIntensity = record.motionMagnitude
+            )
+        }
+
+        val startTime = stagedEpochs.first().timestampMillis
+        val endTime = stagedEpochs.last().timestampMillis + 150_000L
+        val totalInBedMinutes = ((endTime - startTime) / 60_000L).toInt()
+
+        val awakeMinutes = stagedEpochs.count { it.stage == SleepStage.AWAKE } * 5 / 2
+        val lightMinutes = stagedEpochs.count { it.stage == SleepStage.LIGHT } * 5 / 2
+        val deepMinutes = stagedEpochs.count { it.stage == SleepStage.DEEP } * 5 / 2
+        val remMinutes = stagedEpochs.count { it.stage == SleepStage.REM } * 5 / 2
+        val sleepDurationMinutes = lightMinutes + deepMinutes + remMinutes
+
+        if (sleepDurationMinutes < 12) return null
+
+        val inBedHr = stagedEpochs.mapNotNull { it.heartRate }
+        val avgHr = if (inBedHr.isNotEmpty()) inBedHr.average().toInt() else null
+        val inBedHrv = stagedEpochs.mapNotNull { it.hrvRmssd }
+        val avgHrv = if (inBedHrv.isNotEmpty()) inBedHrv.average().toInt() else null
+        val spo2Values = stagedEpochs.mapNotNull { it.spo2 }
+        val avgSpo2 = if (spo2Values.isNotEmpty()) spo2Values.average().toInt() else null
+        val rrValues = stagedEpochs.mapNotNull { it.respiratoryRate }
+        val avgRr = if (rrValues.isNotEmpty()) rrValues.average() else null
+
+        // Nap score: evaluated on rest quality
+        val napScore = ((sleepDurationMinutes.toDouble() / maxOf(totalInBedMinutes, 1).toDouble()) * 80.0 + 20.0).toInt().coerceIn(60, 100)
+
+        return SleepSession(
+            startTimeMillis = startTime,
+            endTimeMillis = endTime,
+            totalInBedMinutes = totalInBedMinutes,
+            sleepDurationMinutes = sleepDurationMinutes,
+            awakeMinutes = awakeMinutes,
+            lightMinutes = lightMinutes,
+            deepMinutes = deepMinutes,
+            remMinutes = remMinutes,
+            averageHeartRate = avgHr,
+            averageHrvRmssd = avgHrv,
+            averageSpo2 = avgSpo2,
+            averageRespiratoryRate = avgRr,
+            sleepScore = napScore,
+            epochs = stagedEpochs,
+            isNap = true,
+            sessionLabel = if (sleepDurationMinutes <= 35) "Power Nap" else "Daytime Nap"
+        )
     }
 }
