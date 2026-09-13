@@ -73,6 +73,21 @@ fun IntegrationsScreen() {
 
         // 1. Health Connect Integration Card
         item {
+            var isAutoSync by remember { mutableStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.isAutoSyncEnabled(context)) }
+            var syncInterval by remember { mutableIntStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.getSyncIntervalMinutes(context)) }
+            var lastSyncTime by remember { mutableLongStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.getLastSyncMillis(context)) }
+            var lastStatus by remember { mutableStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.getLastSyncStatus(context)) }
+
+            val intervals = listOf(
+                15 to "15m",
+                30 to "30m",
+                60 to "1h",
+                180 to "3h",
+                360 to "6h",
+                720 to "12h",
+                1440 to "24h"
+            )
+
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
@@ -82,7 +97,7 @@ fun IntegrationsScreen() {
             ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -103,48 +118,130 @@ fun IntegrationsScreen() {
                     }
 
                     Text(
-                        text = "Writes Heart Rate, HRV (RMSSD), SpO2, Skin Temp, Respiratory Rate, and Sleep Stages into Health Connect on-device.",
+                        text = "Exports Heart Rate, HRV (RMSSD), SpO2, Skin Temp, Respiratory Rate, and Sleep Stages into Google Health Connect entirely on-device.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (!hasHCPermissions) {
-                            Button(
-                                onClick = {
-                                    permissionLauncher.launch(healthConnectManager.requiredPermissions)
-                                },
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Grant Permissions")
+                    if (!hasHCPermissions) {
+                        Button(
+                            onClick = {
+                                permissionLauncher.launch(healthConnectManager.requiredPermissions)
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Grant Health Connect Permissions")
+                        }
+                    } else {
+                        // Background Auto-Sync Settings
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Background Auto-Sync", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    if (isAutoSync) "Runs periodically in background via WorkManager" else "Disabled (Manual export only)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                        } else {
-                            FilledTonalButton(
-                                onClick = {
-                                    scope.launch {
-                                        isSyncingToHC = true
-                                        withContext(Dispatchers.IO) {
-                                            val unsynced = database.epochDao().getUnsyncedEpochs()
-                                            val written = healthConnectManager.writeEpochs(unsynced)
-                                            if (written > 0) {
-                                                database.epochDao().markSynced(unsynced.map { it.counter })
-                                            }
-                                            unsyncedCount = database.epochDao().getUnsyncedEpochs().size
-                                        }
-                                        isSyncingToHC = false
-                                    }
-                                },
-                                enabled = !isSyncingToHC,
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                if (isSyncingToHC) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(6.dp))
+                            Switch(
+                                checked = isAutoSync,
+                                onCheckedChange = { enabled ->
+                                    isAutoSync = enabled
+                                    com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.setAutoSyncEnabled(context, enabled)
                                 }
-                                Text("Export to Health Connect ($unsyncedCount pending)")
+                            )
+                        }
+
+                        if (isAutoSync) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "Sync Interval Frequency",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                androidx.compose.foundation.lazy.LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(intervals.size) { i ->
+                                        val (mins, label) = intervals[i]
+                                        FilterChip(
+                                            selected = syncInterval == mins,
+                                            onClick = {
+                                                syncInterval = mins
+                                                com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.setSyncIntervalMinutes(context, mins)
+                                            },
+                                            label = { Text(label) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Last Sync Info & Manual Export
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Last Background Sync", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    val timeStr = if (lastSyncTime > 0) {
+                                        java.text.SimpleDateFormat("MMM d, h:mm a", java.util.Locale.getDefault()).format(java.util.Date(lastSyncTime))
+                                    } else "Never"
+                                    Text(timeStr, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    Text(lastStatus, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                FilledTonalButton(
+                                    onClick = {
+                                        scope.launch {
+                                            isSyncingToHC = true
+                                            withContext(Dispatchers.IO) {
+                                                val unsynced = database.epochDao().getUnsyncedEpochs()
+                                                val written = healthConnectManager.writeEpochs(unsynced)
+                                                val bulk = unsynced.mapNotNull { com.randallengineering.sleepasringconn.protocol.BulkRecord.parseRecord(it.rawBytes) }
+                                                val sessions = com.randallengineering.sleepasringconn.analytics.SleepStagingEngine.extractAllSleepSessions(bulk)
+                                                for (s in sessions) {
+                                                    healthConnectManager.writeSleepSession(s)
+                                                }
+                                                if (written > 0) {
+                                                    database.epochDao().markSynced(unsynced.map { it.counter })
+                                                }
+                                                val recentStatus = database.deviceStatusDao().getRecentStatusLogsList(50)
+                                                val tempCount = healthConnectManager.writeSkinTemperatures(recentStatus)
+                                                val total = written + tempCount
+                                                com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.recordSyncResult(
+                                                    context,
+                                                    "Exported $total records",
+                                                    total
+                                                )
+                                                unsyncedCount = database.epochDao().getUnsyncedEpochs().size
+                                                lastSyncTime = System.currentTimeMillis()
+                                                lastStatus = "Exported $total records"
+                                            }
+                                            isSyncingToHC = false
+                                        }
+                                    },
+                                    enabled = !isSyncingToHC,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    if (isSyncingToHC) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Text("Sync Now ($unsyncedCount)")
+                                }
                             }
                         }
                     }

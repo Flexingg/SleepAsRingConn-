@@ -45,6 +45,9 @@ interface DeviceStatusDao {
     @Query("SELECT * FROM device_status_logs ORDER BY timestampMillis DESC LIMIT :limit")
     fun getRecentStatusLogs(limit: Int = 50): Flow<List<DeviceStatusEntity>>
 
+    @Query("SELECT * FROM device_status_logs ORDER BY timestampMillis DESC LIMIT :limit")
+    suspend fun getRecentStatusLogsList(limit: Int = 50): List<DeviceStatusEntity>
+
     @Query("SELECT * FROM device_status_logs WHERE timestampMillis >= :since ORDER BY timestampMillis ASC")
     suspend fun getStatusLogsSince(since: Long): List<DeviceStatusEntity>
 

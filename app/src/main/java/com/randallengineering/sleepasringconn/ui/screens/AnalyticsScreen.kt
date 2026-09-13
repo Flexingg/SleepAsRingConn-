@@ -10,12 +10,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -29,27 +32,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.randallengineering.sleepasringconn.data.AppDatabase
 import com.randallengineering.sleepasringconn.data.DeviceStatusEntity
-import com.randallengineering.sleepasringconn.data.EpochEntity
 import com.randallengineering.sleepasringconn.protocol.BulkRecord
 import com.randallengineering.sleepasringconn.ui.theme.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
 enum class TimeRange(val label: String, val durationMillis: Long) {
     LAST_24_HOURS("24 Hours", 24 * 60 * 60 * 1000L),
     LAST_NIGHT("Last Night", 12 * 60 * 60 * 1000L),
-    LAST_7_DAYS("7 Days", 7 * 24 * 60 * 60 * 1000L)
+    LAST_7_DAYS("7 Days", 7 * 24 * 60 * 60 * 1000L),
+    LAST_14_DAYS("14 Days", 14 * 24 * 60 * 60 * 1000L),
+    LAST_30_DAYS("30 Days", 30 * 24 * 60 * 60 * 1000L)
 }
 
 enum class MetricCategory(val label: String) {
-    ALL("All Metrics"),
+    ALL("All Insights"),
     HEART_RATE("Heart & HRV"),
     SPO2("SpO2 & Breathing"),
-    TEMPERATURE("Temperature"),
-    ACTIVITY("Activity & Motion"),
-    BATTERY("Battery & Voltage")
+    TEMPERATURE("Skin Temp"),
+    ACTIVITY("Motion & Steps"),
+    BATTERY("Battery")
 }
 
 @Composable
@@ -86,11 +88,11 @@ fun AnalyticsScreen() {
 
         // Time Range Filter Chips
         item {
-            Row(
+            LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                TimeRange.entries.forEach { range ->
+                items(TimeRange.entries.toTypedArray()) { range ->
                     FilterChip(
                         selected = selectedRange == range,
                         onClick = { selectedRange = range },
@@ -130,8 +132,8 @@ fun AnalyticsScreen() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(Icons.Default.ShowChart, contentDescription = null, tint = SleepPurple, modifier = Modifier.size(48.dp))
-                        Text("No historical data in this time range", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null, tint = SleepPurple, modifier = Modifier.size(48.dp))
+                        Text("No historical telemetry in this time range", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
                             "Sync your RingConn Gen 2 from the Dashboard to pull the latest 2.5-minute health epochs and live descriptors.",
                             style = MaterialTheme.typography.bodyMedium,
@@ -141,10 +143,19 @@ fun AnalyticsScreen() {
                 }
             }
         } else {
-            // 1. Heart Rate & HRV Chart
+            // 1. Heart Rate & HRV Deep Analysis Card
             if (selectedCategory == MetricCategory.ALL || selectedCategory == MetricCategory.HEART_RATE) {
                 item {
                     HeartRateAnalyticsCard(epochList)
+                }
+                item {
+                    HrvDistributionCard(epochList)
+                }
+                item {
+                    HeartRateZonesCard(epochList)
+                }
+                item {
+                    CircadianDipCard(epochList)
                 }
             }
 
@@ -155,7 +166,7 @@ fun AnalyticsScreen() {
                 }
             }
 
-            // 3. Skin Temperature Trends
+            // 3. Skin Temperature Trends & Thermal Rhythm
             if (selectedCategory == MetricCategory.ALL || selectedCategory == MetricCategory.TEMPERATURE) {
                 item {
                     TemperatureAnalyticsCard(statusLogs)
@@ -227,14 +238,14 @@ fun HeartRateAnalyticsCard(epochs: List<BulkRecord>) {
                 ) {
                     MetricStatBadge("Min HRV", "${hrvValues.minOrNull()} ms", SleepPurple)
                     MetricStatBadge("Avg HRV", "${hrvValues.average().toInt()} ms", SleepPurple)
-                    MetricStatBadge("Max HRV", "${hrvValues.maxOrNull()} ms", SleepPurple)
+                    MetricStatBadge("Max HRV", "${hrvValues.maxOrNull()} ms", Color(0xFF00E676))
                 }
             }
 
             if (hrRecords.isEmpty() && hrvRecords.isEmpty()) {
                 Text("No heart rate or HRV points in this window.", style = MaterialTheme.typography.bodySmall)
             } else {
-                Text("Tap the chart to inspect points (Red: HR, Purple: HRV).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Tap the timeline to inspect individual points (Red: HR, Purple: HRV).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 InteractiveLineChart(
                     dataPoints = hrRecords.map { it.timestampMillis to it.heartRate!!.toFloat() },
@@ -258,13 +269,204 @@ fun HeartRateAnalyticsCard(epochs: List<BulkRecord>) {
                             modifier = Modifier.padding(12.dp).fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(rec.timestampMillis))
+                            val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(rec.timestampMillis))
                             Text(timeStr, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                             rec.heartRate?.let { Text("HR: $it BPM", color = HeartRateRed, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
                             rec.hrvRmssd?.let { Text("HRV: ${it} ms", color = SleepPurple, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun HrvDistributionCard(epochs: List<BulkRecord>) {
+    val hrvValues = epochs.mapNotNull { it.hrvRmssd }
+    if (hrvValues.isEmpty()) return
+
+    val total = hrvValues.size.toFloat()
+    val lowCount = hrvValues.count { it < 25 }
+    val moderateCount = hrvValues.count { it in 25..49 }
+    val optimalCount = hrvValues.count { it in 50..75 }
+    val peakCount = hrvValues.count { it > 75 }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Timeline, contentDescription = null, tint = Color(0xFF00E676))
+                Text("Autonomic Recovery (HRV Distribution)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+
+            Text(
+                "Higher RMSSD values reflect parasympathetic tone and physiological readiness.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Distribution Stack Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(7.dp))
+            ) {
+                if (lowCount > 0) Box(modifier = Modifier.weight(lowCount / total).fillMaxHeight().background(Color(0xFFFF7043)))
+                if (moderateCount > 0) Box(modifier = Modifier.weight(moderateCount / total).fillMaxHeight().background(Color(0xFFFFCA28)))
+                if (optimalCount > 0) Box(modifier = Modifier.weight(optimalCount / total).fillMaxHeight().background(Color(0xFF26A69A)))
+                if (peakCount > 0) Box(modifier = Modifier.weight(peakCount / total).fillMaxHeight().background(Color(0xFF00E676)))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                HrvLegendItem("<25ms Stress", "${(lowCount * 100 / total).toInt()}%", Color(0xFFFF7043))
+                HrvLegendItem("25-50ms Moderate", "${(moderateCount * 100 / total).toInt()}%", Color(0xFFFFCA28))
+                HrvLegendItem("50-75ms Recovery", "${(optimalCount * 100 / total).toInt()}%", Color(0xFF26A69A))
+                HrvLegendItem(">75ms Peak", "${(peakCount * 100 / total).toInt()}%", Color(0xFF00E676))
+            }
+        }
+    }
+}
+
+@Composable
+fun HrvLegendItem(label: String, pct: String, color: Color) {
+    Column(horizontalAlignment = Alignment.Start) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(color))
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(pct, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun HeartRateZonesCard(epochs: List<BulkRecord>) {
+    val hrs = epochs.mapNotNull { it.heartRate }
+    if (hrs.isEmpty()) return
+
+    val total = hrs.size.toFloat()
+    val restingCount = hrs.count { it < 60 }
+    val lightCount = hrs.count { it in 60..99 }
+    val moderateCount = hrs.count { it in 100..129 }
+    val highCount = hrs.count { it >= 130 }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Heart Rate Intensity Zones", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = HeartRateRed)
+
+            ZoneRow("Resting (< 60 BPM)", restingCount, total, DeepSleepBlue)
+            ZoneRow("Normal / Light (60-99 BPM)", lightCount, total, LightSleepTeal)
+            ZoneRow("Moderate (100-129 BPM)", moderateCount, total, AwakeSleepOrange)
+            ZoneRow("High / Active (≥ 130 BPM)", highCount, total, Color.Red)
+        }
+    }
+}
+
+@Composable
+fun ZoneRow(label: String, count: Int, total: Float, color: Color) {
+    val ratio = if (total > 0) count / total else 0f
+    val pct = (ratio * 100).toInt()
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Text("$pct% ($count epochs)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = color)
+        }
+        LinearProgressIndicator(
+            progress = { ratio },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp)),
+            color = color,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
+}
+
+@Composable
+fun CircadianDipCard(epochs: List<BulkRecord>) {
+    val validHrs = epochs.filter { it.heartRate != null }
+    if (validHrs.size < 12) return
+
+    val cal = Calendar.getInstance()
+    val dayHrs = mutableListOf<Int>()
+    val nightHrs = mutableListOf<Int>()
+
+    for (rec in validHrs) {
+        cal.timeInMillis = rec.timestampMillis
+        val hour = cal.get(Calendar.HOUR_OF_DAY)
+        val hr = rec.heartRate!!
+        if (hour in 7..21) {
+            dayHrs.add(hr)
+        } else {
+            nightHrs.add(hr)
+        }
+    }
+
+    if (dayHrs.isEmpty() || nightHrs.isEmpty()) return
+
+    val dayAvg = dayHrs.average()
+    val nightAvg = nightHrs.average()
+    val dipPct = ((dayAvg - nightAvg) / dayAvg * 100.0).coerceIn(-50.0, 50.0)
+
+    val dipStatus = when {
+        dipPct >= 10.0 && dipPct <= 20.0 -> "Healthy Dipper (Optimal 10-20%)"
+        dipPct > 20.0 -> "Extreme Dipper (> 20%)"
+        dipPct > 0.0 -> "Non-Dipper (< 10%)"
+        else -> "Reverse Dipper (Nocturnal Elevation)"
+    }
+
+    val dipColor = if (dipPct in 10.0..20.0) Color(0xFF00E676) else AwakeSleepOrange
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Circadian Nocturnal Dip Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    "%.1f%% Dip".format(dipPct),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = dipColor
+                )
+            }
+
+            Text(dipStatus, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = dipColor)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                MetricStatBadge("Daytime HR (7am-10pm)", "${dayAvg.toInt()} BPM", AwakeSleepOrange)
+                MetricStatBadge("Nighttime HR (10pm-7am)", "${nightAvg.toInt()} BPM", SleepPurple)
             }
         }
     }
@@ -278,8 +480,14 @@ fun Spo2AnalyticsCard(epochs: List<BulkRecord>) {
     val spo2Values = spo2Records.mapNotNull { it.spo2Percent }
     val respValues = respRecords.mapNotNull { it.respiratoryRate }
 
+    val total = spo2Values.size.toFloat().coerceAtLeast(1f)
+    val optimalCount = spo2Values.count { it >= 96 }
+    val mildDipCount = spo2Values.count { it in 93..95 }
+    val lowDipCount = spo2Values.count { it < 93 }
+
     val desaturations = spo2Values.count { it < 95 }
-    val dropsBelow90 = spo2Values.count { it < 90 }
+    val hoursOfData = (epochs.size * 2.5) / 60.0
+    val odiEstimate = if (hoursOfData > 0.5) (desaturations / hoursOfData) else 0.0
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -307,7 +515,7 @@ fun Spo2AnalyticsCard(epochs: List<BulkRecord>) {
                 if (spo2Values.isNotEmpty()) {
                     MetricStatBadge("Avg SpO2", "${"%.1f".format(spo2Values.average())}%", Spo2Blue)
                     MetricStatBadge("Min SpO2", "${spo2Values.minOrNull()}%", if ((spo2Values.minOrNull() ?: 100) < 90) Color.Red else Spo2Blue)
-                    MetricStatBadge("<95% Dips", "$desaturations", if (desaturations > 0) AwakeSleepOrange else Color.Gray)
+                    MetricStatBadge("Dip Rate", "%.1f dips/h".format(odiEstimate), if (odiEstimate > 5) AwakeSleepOrange else Color(0xFF00E676))
                 }
                 if (respValues.isNotEmpty()) {
                     MetricStatBadge("Avg RR", "%.1f brpm".format(respValues.average()), LightSleepTeal)
@@ -317,6 +525,27 @@ fun Spo2AnalyticsCard(epochs: List<BulkRecord>) {
             if (spo2Records.isEmpty()) {
                 Text("No SpO2 readings in this window.", style = MaterialTheme.typography.bodySmall)
             } else {
+                // SpO2 distribution bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(12.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                ) {
+                    if (optimalCount > 0) Box(modifier = Modifier.weight(optimalCount / total).fillMaxHeight().background(Color(0xFF00E676)))
+                    if (mildDipCount > 0) Box(modifier = Modifier.weight(mildDipCount / total).fillMaxHeight().background(Color(0xFFFFCA28)))
+                    if (lowDipCount > 0) Box(modifier = Modifier.weight(lowDipCount / total).fillMaxHeight().background(Color.Red))
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Optimal ≥96%: ${(optimalCount * 100 / total).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color(0xFF00E676))
+                    Text("Mild 93-95%: ${(mildDipCount * 100 / total).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color(0xFFFFCA28))
+                    Text("Low <93%: ${(lowDipCount * 100 / total).toInt()}%", style = MaterialTheme.typography.labelSmall, color = Color.Red)
+                }
+
                 InteractiveLineChart(
                     dataPoints = spo2Records.map { it.timestampMillis to it.spo2Percent!!.toFloat() },
                     primaryColor = Spo2Blue,
@@ -349,7 +578,7 @@ fun TemperatureAnalyticsCard(logs: List<DeviceStatusEntity>) {
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Icon(Icons.Default.Thermostat, contentDescription = null, tint = AwakeSleepOrange)
-                    Text("Skin Temperature & Circadian Rhythm", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Skin Temperature & Thermal Rhythm", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -362,7 +591,7 @@ fun TemperatureAnalyticsCard(logs: List<DeviceStatusEntity>) {
                 ) {
                     MetricStatBadge("Avg Temp", "%.1f °C".format(avgC), AwakeSleepOrange)
                     MetricStatBadge("Avg Temp (°F)", "%.1f °F".format(avgF), AwakeSleepOrange)
-                    MetricStatBadge("Min / Max", "%.1f / %.1f".format(tempValues.minOrNull() ?: 0.0, tempValues.maxOrNull() ?: 0.0), Color.Gray)
+                    MetricStatBadge("Range", "%.1f - %.1f°C".format(tempValues.minOrNull() ?: 0.0, tempValues.maxOrNull() ?: 0.0), Color.Gray)
                 }
 
                 InteractiveLineChart(
@@ -400,7 +629,7 @@ fun ActivityMotionAnalyticsCard(epochs: List<BulkRecord>, logs: List<DeviceStatu
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.DirectionsWalk, contentDescription = null, tint = LightSleepTeal)
+                    Icon(Icons.AutoMirrored.Filled.DirectionsWalk, contentDescription = null, tint = LightSleepTeal)
                     Text("Activity & Motion Intensity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
@@ -602,3 +831,4 @@ fun MetricStatBadge(label: String, value: String, color: Color) {
         Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = color)
     }
 }
+
