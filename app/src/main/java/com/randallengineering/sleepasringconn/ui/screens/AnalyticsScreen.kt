@@ -213,8 +213,16 @@ fun HeartRateAnalyticsCard(epochs: List<BulkRecord>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Favorite, contentDescription = null, tint = HeartRateRed)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(HeartRateRed.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Favorite, contentDescription = null, tint = HeartRateRed, modifier = Modifier.size(20.dp))
+                    }
                     Text("Heart Rate & HRV (RMSSD)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
@@ -300,8 +308,16 @@ fun HrvDistributionCard(epochs: List<BulkRecord>) {
             modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Timeline, contentDescription = null, tint = Color(0xFF00E676))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF00E676).copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Timeline, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(20.dp))
+                }
                 Text("Autonomic Recovery (HRV Distribution)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
 
@@ -367,7 +383,18 @@ fun HeartRateZonesCard(epochs: List<BulkRecord>) {
             modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("Heart Rate Intensity Zones", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = HeartRateRed)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(HeartRateRed.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Speed, contentDescription = null, tint = HeartRateRed, modifier = Modifier.size(20.dp))
+                }
+                Text("Heart Rate Intensity Zones", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
 
             ZoneRow("Resting (< 60 BPM)", restingCount, total, DeepSleepBlue)
             ZoneRow("Normal / Light (60-99 BPM)", lightCount, total, LightSleepTeal)
@@ -450,7 +477,18 @@ fun CircadianDipCard(epochs: List<BulkRecord>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Circadian Nocturnal Dip Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.NightsStay, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    }
+                    Text("Circadian Nocturnal Dip", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
                 Text(
                     "%.1f%% Dip".format(dipPct),
                     style = MaterialTheme.typography.titleMedium,
@@ -502,8 +540,16 @@ fun Spo2AnalyticsCard(epochs: List<BulkRecord>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Air, contentDescription = null, tint = Spo2Blue)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Spo2Blue.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Air, contentDescription = null, tint = Spo2Blue, modifier = Modifier.size(20.dp))
+                    }
                     Text("Blood Oxygen (SpO2) & Respiration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
@@ -576,8 +622,16 @@ fun TemperatureAnalyticsCard(logs: List<DeviceStatusEntity>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.Thermostat, contentDescription = null, tint = AwakeSleepOrange)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(AwakeSleepOrange.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Thermostat, contentDescription = null, tint = AwakeSleepOrange, modifier = Modifier.size(20.dp))
+                    }
                     Text("Skin Temperature & Thermal Rhythm", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
@@ -628,8 +682,16 @@ fun ActivityMotionAnalyticsCard(epochs: List<BulkRecord>, logs: List<DeviceStatu
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.DirectionsWalk, contentDescription = null, tint = LightSleepTeal)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(LightSleepTeal.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.DirectionsWalk, contentDescription = null, tint = LightSleepTeal, modifier = Modifier.size(20.dp))
+                    }
                     Text("Activity & Motion Intensity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
@@ -670,8 +732,16 @@ fun BatteryVoltageAnalyticsCard(logs: List<DeviceStatusEntity>) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.BatteryChargingFull, contentDescription = null, tint = BatteryGreen)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(BatteryGreen.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.BatteryChargingFull, contentDescription = null, tint = BatteryGreen, modifier = Modifier.size(20.dp))
+                    }
                     Text("Battery & Voltage Telemetry", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }

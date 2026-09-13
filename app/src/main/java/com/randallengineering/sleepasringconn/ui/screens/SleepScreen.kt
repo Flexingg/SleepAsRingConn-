@@ -215,65 +215,111 @@ fun SleepScreen() {
                         modifier = Modifier.padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // Badge for Session Type
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (session.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
-                                contentDescription = null,
-                                tint = if (session.isNap) Color(0xFFFFA000) else SleepPurple,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = if (session.isNap) session.sessionLabel.uppercase() else "OVERNIGHT SLEEP SESSION",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
-                            )
-                        }
-
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    if (session.isNap) "Recovery Score" else "Sleep Score",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    "${session.sleepScore}",
-                                    style = MaterialTheme.typography.displayMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
-                                )
+                            // Circular Sleep Score Dial
+                            Box(
+                                modifier = Modifier.size(96.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    val strokeWidth = 9.dp.toPx()
+                                    val diameter = size.minDimension - strokeWidth
+                                    val topLeft = Offset(strokeWidth / 2, strokeWidth / 2)
+                                    val arcSize = Size(diameter, diameter)
+
+                                    drawArc(
+                                        color = Color.White.copy(alpha = 0.1f),
+                                        startAngle = 135f,
+                                        sweepAngle = 270f,
+                                        useCenter = false,
+                                        topLeft = topLeft,
+                                        size = arcSize,
+                                        style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                                    )
+
+                                    val sweep = 270f * (session.sleepScore / 100f)
+                                    val scoreColor = if (session.isNap) Color(0xFFFFA000) else if (session.sleepScore >= 80) StepsGreen else if (session.sleepScore >= 70) SleepPurple else TempAmber
+
+                                    drawArc(
+                                        brush = Brush.sweepGradient(
+                                            listOf(scoreColor, Color(0xFF00E676), DeepSleepBlue)
+                                        ),
+                                        startAngle = 135f,
+                                        sweepAngle = sweep,
+                                        useCenter = false,
+                                        topLeft = topLeft,
+                                        size = arcSize,
+                                        style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                                    )
+                                }
+
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = "${session.sleepScore}",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (session.isNap) "Recovery" else "Score",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
 
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(
-                                    if (session.isNap) "Nap Duration" else "Actual Sleep",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            // Info Column
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = (if (session.isNap) Color(0xFFFFA000) else SleepPurple).copy(alpha = 0.15f)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (session.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
+                                            contentDescription = null,
+                                            tint = if (session.isNap) Color(0xFFFFA000) else SleepPurple,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = if (session.isNap) session.sessionLabel.uppercase() else "OVERNIGHT SLEEP SESSION",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
+                                        )
+                                    }
+                                }
+
                                 val sleepHours = session.sleepDurationMinutes / 60
                                 val sleepMins = session.sleepDurationMinutes % 60
                                 val sleepText = if (sleepHours > 0) "${sleepHours}h ${sleepMins}m" else "${sleepMins}m"
+
                                 Text(
-                                    sleepText,
+                                    text = sleepText,
                                     style = MaterialTheme.typography.headlineSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
+
                                 val bedHours = session.totalInBedMinutes / 60
                                 val bedMins = session.totalInBedMinutes % 60
                                 val bedText = if (bedHours > 0) "${bedHours}h ${bedMins}m" else "${bedMins}m"
                                 Text(
-                                    "In Bed: $bedText • Eff: ${session.sleepEfficiencyPercent}%",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    text = "In Bed: $bedText • Efficiency: ${session.sleepEfficiencyPercent}%",
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }

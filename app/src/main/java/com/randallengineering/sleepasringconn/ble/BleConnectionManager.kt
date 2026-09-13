@@ -528,6 +528,7 @@ object BleConnectionManager {
                     val hr = packet[2].toInt() and 0xFF
                     if (hr in 30..220) {
                         _liveHeartRate.value = hr
+                        HrBroadcastManager.broadcastHeartRate(hr)
                         log("Live HR (0x4E): $hr BPM")
                         if (SleepAsAndroidBridge.isTrackingActive) {
                             appContext?.let { ctx ->
@@ -550,6 +551,7 @@ object BleConnectionManager {
                     val hr = packet[2].toInt() and 0xFF
                     if (hr in 30..220) {
                         _liveHeartRate.value = hr
+                        HrBroadcastManager.broadcastHeartRate(hr)
                         log("Live HR (0x15): $hr BPM")
 
                         // Forward to Sleep as Android if tracking
@@ -653,35 +655,35 @@ object BleConnectionManager {
         livePollJob?.cancel()
 
         coroutineScope.launch {
-            log("Starting live measurement mode (${if (hrMode) "HR" else "SpO2"})...")
+            log("Starting live continuous measurement mode (${if (hrMode) "HR Workout Stream" else "SpO2"})...")
             sendCommand(RingProtocol.CMD_STATUS_QUERY)
-            delay(150)
-            sendCommand(if (hrMode) RingProtocol.CMD_LIVE_HR_MODE else RingProtocol.CMD_LIVE_SPO2_MODE)
-            delay(150)
+            delay(100)
+            if (hrMode) {
+                sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
+                delay(100)
+                sendCommand(RingProtocol.CMD_SPORT_START)
+            } else {
+                sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
+            }
+            delay(100)
             sendCommand(RingProtocol.CMD_FETCH)
-            delay(150)
+            delay(100)
             sendCommand(RingProtocol.CMD_POLL)
 
-            // Maintainer loop: queries samples every 2s, does periodic mode refresh
+            // High-frequency maintainer loop: queries samples every 1s for accurate HR updates
             var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
-                    delay(2000)
+                    delay(1000)
                     tick++
                     sendCommand(RingProtocol.CMD_POLL)
 
-                    if (tick % 15 == 0) {
-                        // Quick SpO2 check
+                    if (!hrMode && tick % 15 == 0) {
+                        // In SpO2 mode, query SpO2 periodically
                         sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
                         sendCommand(RingProtocol.CMD_FETCH)
-                        delay(200)
-                        sendCommand(RingProtocol.CMD_POLL)
-                        delay(200)
-                        // Return to HR mode
-                        sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
-                        sendCommand(RingProtocol.CMD_FETCH)
-                    } else if (tick % 30 == 0) {
-                        // Refresh descriptor (temp, steps, battery)
+                    } else if (tick % 20 == 0) {
+                        // Keepalive & descriptor refresh
                         sendCommand(RingProtocol.CMD_FETCH)
                     }
                 }

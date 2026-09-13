@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -14,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -65,11 +68,18 @@ fun IntegrationsScreen() {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text(
-                text = "Integrations & Bridges",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
+            Column {
+                Text(
+                    text = "Integrations & Bridges",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Google Health Connect, Sleep as Android & BLE Broadcast",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // 1. Health Connect Integration Card
@@ -105,8 +115,16 @@ fun IntegrationsScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Icon(Icons.Default.HealthAndSafety, contentDescription = null, tint = StepsGreen, modifier = Modifier.size(28.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(StepsGreen.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.HealthAndSafety, contentDescription = null, tint = StepsGreen, modifier = Modifier.size(22.dp))
+                            }
                             Column {
                                 Text("Google Health Connect", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(
@@ -268,8 +286,16 @@ fun IntegrationsScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = SleepPurple, modifier = Modifier.size(28.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(SleepPurple.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Bedtime, contentDescription = null, tint = SleepPurple, modifier = Modifier.size(22.dp))
+                            }
                             Column {
                                 Text("Sleep as Android Wearable API", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(
@@ -385,13 +411,21 @@ fun IntegrationsScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Icon(
-                                Icons.Default.DirectionsBike,
-                                contentDescription = null,
-                                tint = com.randallengineering.sleepasringconn.ui.theme.HeartRateRed,
-                                modifier = Modifier.size(28.dp)
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(com.randallengineering.sleepasringconn.ui.theme.HeartRateRed.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.DirectionsBike,
+                                    contentDescription = null,
+                                    tint = com.randallengineering.sleepasringconn.ui.theme.HeartRateRed,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
                             Column {
                                 Text("Peloton & Fitness HR Broadcast", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(

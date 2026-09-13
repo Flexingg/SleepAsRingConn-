@@ -10,6 +10,7 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,7 +31,8 @@ object HrBroadcastManager {
     private var gattServer: BluetoothGattServer? = null
     private var hrMeasurementCharacteristic: BluetoothGattCharacteristic? = null
 
-    private val subscribedDevices = mutableSetOf<BluetoothDevice>()
+    private val subscribedDevices = Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
+    private val connectedDevices = Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
 
     private val _isBroadcasting = MutableStateFlow(false)
     val isBroadcasting: StateFlow<Boolean> = _isBroadcasting.asStateFlow()
@@ -46,6 +48,9 @@ object HrBroadcastManager {
 
     private val _statusMessage = MutableStateFlow("Idle")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
+
+    private var tickerJob: Job? = null
+    private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     fun isSupported(context: Context): Boolean {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -84,7 +89,7 @@ object HrBroadcastManager {
         // Heart Rate Measurement Characteristic (Notify only)
         val hrMeasurement = BluetoothGattCharacteristic(
             HEART_RATE_MEASUREMENT_UUID,
-            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+            BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_READ,
             BluetoothGattCharacteristic.PERMISSION_READ
         )
 
@@ -109,7 +114,7 @@ object HrBroadcastManager {
         hrService.addCharacteristic(bodyLocation)
         server.addService(hrService)
 
-        // 2. Start Advertising
+        // 2. Start Advertising with Scan Response for instant Peloton discovery
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
@@ -118,15 +123,23 @@ object HrBroadcastManager {
             .build()
 
         val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(true)
+            .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(HEART_RATE_SERVICE_UUID))
             .build()
 
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(true)
+            .build()
+
         try {
-            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
             _isBroadcasting.value = true
-            _statusMessage.value = "Advertising as 'RingConn HR'..."
+            _statusMessage.value = "Advertising (Ready for Peloton / Zwift)..."
             Log.d(TAG, "Started BLE Heart Rate Advertising")
+
+            // 3. Start 1 Hz Heartbeat Transmission Loop (Mandatory for Peloton/Zwift stability)
+            startPeriodicHeartbeatTicker()
+
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start advertising: ${e.message}", e)
@@ -136,7 +149,23 @@ object HrBroadcastManager {
         }
     }
 
+    private fun startPeriodicHeartbeatTicker() {
+        tickerJob?.cancel()
+        tickerJob = coroutineScope.launch {
+            while (isActive && _isBroadcasting.value) {
+                delay(1000) // Standard 1 Hz BLE HRM rate
+                val currentBpm = _lastBroadcastBpm.value
+                if (currentBpm != null && currentBpm > 0) {
+                    sendNotificationPacket(currentBpm)
+                }
+            }
+        }
+    }
+
     fun stopBroadcast() {
+        tickerJob?.cancel()
+        tickerJob = null
+
         try {
             advertiser?.stopAdvertising(advertiseCallback)
         } catch (e: Exception) {
@@ -152,9 +181,8 @@ object HrBroadcastManager {
         gattServer = null
         hrMeasurementCharacteristic = null
 
-        synchronized(subscribedDevices) {
-            subscribedDevices.clear()
-        }
+        subscribedDevices.clear()
+        connectedDevices.clear()
 
         _isBroadcasting.value = false
         _connectedDeviceCount.value = 0
@@ -164,9 +192,12 @@ object HrBroadcastManager {
     }
 
     fun broadcastHeartRate(bpm: Int) {
-        if (!_isBroadcasting.value) return
+        if (!_isBroadcasting.value || bpm <= 0) return
         _lastBroadcastBpm.value = bpm
+        sendNotificationPacket(bpm)
+    }
 
+    private fun sendNotificationPacket(bpm: Int) {
         val characteristic = hrMeasurementCharacteristic ?: return
         val server = gattServer ?: return
 
@@ -180,14 +211,25 @@ object HrBroadcastManager {
 
         characteristic.value = packet
 
-        synchronized(subscribedDevices) {
-            for (device in subscribedDevices) {
+        val targets = synchronized(subscribedDevices) {
+            if (subscribedDevices.isNotEmpty()) {
+                subscribedDevices.toList()
+            } else {
+                // If Peloton connected but hasn't written CCCD yet, push to all connected centrals
+                synchronized(connectedDevices) { connectedDevices.toList() }
+            }
+        }
+
+        for (device in targets) {
+            try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     server.notifyCharacteristicChanged(device, characteristic, false, packet)
                 } else {
                     @Suppress("DEPRECATION")
                     server.notifyCharacteristicChanged(device, characteristic, false)
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error notifying device ${device.address}: ${e.message}")
             }
         }
     }
@@ -217,16 +259,20 @@ object HrBroadcastManager {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             Log.d(TAG, "GATT Server connection state change: ${device.address} -> $newState (status $status)")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                _connectedDeviceName.value = device.name ?: device.address
-                _statusMessage.value = "Connected to ${_connectedDeviceName.value}"
+                connectedDevices.add(device)
+                val name = device.name ?: "Peloton / Fitness Receiver"
+                _connectedDeviceName.value = name
+                _connectedDeviceCount.value = connectedDevices.size
+                _statusMessage.value = "Connected to $name"
+                Log.i(TAG, "Central device connected to GATT Server: ${device.address} ($name)")
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                synchronized(subscribedDevices) {
-                    subscribedDevices.remove(device)
-                    _connectedDeviceCount.value = subscribedDevices.size
-                }
-                if (subscribedDevices.isEmpty()) {
+                connectedDevices.remove(device)
+                subscribedDevices.remove(device)
+                _connectedDeviceCount.value = connectedDevices.size
+                if (connectedDevices.isEmpty()) {
                     _connectedDeviceName.value = null
                     _statusMessage.value = "Broadcasting (Ready for Peloton / Zwift)"
+                    Log.i(TAG, "All centrals disconnected from GATT Server")
                 }
             }
         }
@@ -239,6 +285,10 @@ object HrBroadcastManager {
         ) {
             if (characteristic.uuid == BODY_SENSOR_LOCATION_UUID) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, byteArrayOf(0x03))
+            } else if (characteristic.uuid == HEART_RATE_MEASUREMENT_UUID) {
+                val bpm = _lastBroadcastBpm.value ?: 70
+                val packet = byteArrayOf(0x06.toByte(), (bpm.coerceIn(0, 255)).toByte())
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, packet)
             } else {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, characteristic.value)
             }
@@ -251,12 +301,10 @@ object HrBroadcastManager {
             descriptor: BluetoothGattDescriptor
         ) {
             if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
-                val value = synchronized(subscribedDevices) {
-                    if (subscribedDevices.contains(device)) {
-                        BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    } else {
-                        BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-                    }
+                val value = if (subscribedDevices.contains(device)) {
+                    BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                } else {
+                    BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
                 }
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value)
             } else {
@@ -275,18 +323,15 @@ object HrBroadcastManager {
         ) {
             if (descriptor.uuid == CLIENT_CHARACTERISTIC_CONFIG_UUID) {
                 if (Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
-                    synchronized(subscribedDevices) {
-                        subscribedDevices.add(device)
-                        _connectedDeviceCount.value = subscribedDevices.size
-                    }
-                    _connectedDeviceName.value = device.name ?: device.address
-                    _statusMessage.value = "Streaming HR to ${_connectedDeviceName.value}"
+                    subscribedDevices.add(device)
+                    connectedDevices.add(device)
+                    _connectedDeviceCount.value = subscribedDevices.size
+                    _connectedDeviceName.value = device.name ?: "Peloton / Fitness Receiver"
+                    _statusMessage.value = "Streaming HR (1 Hz) to ${_connectedDeviceName.value}"
                     Log.i(TAG, "Device subscribed to HR notifications: ${device.address}")
                 } else {
-                    synchronized(subscribedDevices) {
-                        subscribedDevices.remove(device)
-                        _connectedDeviceCount.value = subscribedDevices.size
-                    }
+                    subscribedDevices.remove(device)
+                    _connectedDeviceCount.value = subscribedDevices.size
                     Log.i(TAG, "Device unsubscribed from HR notifications: ${device.address}")
                 }
 

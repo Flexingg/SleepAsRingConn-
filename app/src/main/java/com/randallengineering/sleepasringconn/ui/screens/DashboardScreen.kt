@@ -11,6 +11,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.automirrored.filled.DirectionsBike
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,16 +21,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
+import com.randallengineering.sleepasringconn.ble.HrBroadcastManager
 import com.randallengineering.sleepasringconn.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,14 +51,14 @@ fun DashboardScreen(
     val isSyncing by BleConnectionManager.isSyncing.collectAsState()
     val isRingLedOn by BleConnectionManager.isRingLedOn.collectAsState()
     val discoveredDevices by BleConnectionManager.discoveredDevices.collectAsState()
-    val isBroadcasting by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.isBroadcasting.collectAsState()
-    val broadcastStatus by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.statusMessage.collectAsState()
-    val connectedReceiver by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.connectedDeviceName.collectAsState()
-    val broadcastBpm by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.lastBroadcastBpm.collectAsState()
+    val isBroadcasting by HrBroadcastManager.isBroadcasting.collectAsState()
+    val broadcastStatus by HrBroadcastManager.statusMessage.collectAsState()
+    val connectedReceiver by HrBroadcastManager.connectedDeviceName.collectAsState()
+    val broadcastBpm by HrBroadcastManager.lastBroadcastBpm.collectAsState()
 
     var showDeviceSheet by remember { mutableStateOf(false) }
 
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     val motionSensorManager = remember { com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(context) }
     val rawAccel by motionSensorManager.rawAcceleration.collectAsState()
     val currentMagnitude by motionSensorManager.currentMagnitude.collectAsState()
@@ -73,7 +79,50 @@ fun DashboardScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Connection Header & Ring Status Card
+        // 1. Header Title & Subtitle
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "RingConn Gen 2",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Live Telemetry & Smart Actigraphy",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (!isConnected) {
+                    FilledTonalButton(
+                        onClick = {
+                            BleConnectionManager.startScan()
+                            showDeviceSheet = true
+                        },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.BluetoothSearching, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Connect")
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { BleConnectionManager.disconnect() },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Disconnect")
+                    }
+                }
+            }
+        }
+
+        // 2. Hero Ring Status & Battery Dial Card
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -84,7 +133,164 @@ fun DashboardScreen(
             ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Circular Battery / Connection Dial
+                        val primaryColor = MaterialTheme.colorScheme.primary
+                        Box(
+                            modifier = Modifier.size(96.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val strokeWidth = 9.dp.toPx()
+                                val diameter = size.minDimension - strokeWidth
+                                val topLeft = Offset(strokeWidth / 2, strokeWidth / 2)
+                                val arcSize = Size(diameter, diameter)
+
+                                drawArc(
+                                    color = Color.White.copy(alpha = 0.1f),
+                                    startAngle = 135f,
+                                    sweepAngle = 270f,
+                                    useCenter = false,
+                                    topLeft = topLeft,
+                                    size = arcSize,
+                                    style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                                )
+
+                                val batteryPct = deviceStatus?.batteryPercent ?: if (isConnected) 100 else 0
+                                val sweep = 270f * (batteryPct / 100f)
+                                val dialColor = if (batteryPct > 20) StepsGreen else HeartRateRed
+
+                                drawArc(
+                                    brush = Brush.sweepGradient(
+                                        listOf(dialColor, Color(0xFF00E676), primaryColor)
+                                    ),
+                                    startAngle = 135f,
+                                    sweepAngle = sweep,
+                                    useCenter = false,
+                                    topLeft = topLeft,
+                                    size = arcSize,
+                                    style = Stroke(strokeWidth, cap = StrokeCap.Round)
+                                )
+                            }
+
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (isConnected && deviceStatus != null) {
+                                    Text(
+                                        text = "${deviceStatus!!.batteryPercent}%",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = if (deviceStatus!!.isOnCharger) "Charging" else "Battery",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    Icon(
+                                        if (isConnected) Icons.Default.BluetoothConnected else Icons.Default.BluetoothDisabled,
+                                        contentDescription = null,
+                                        tint = if (isConnected) StepsGreen else HeartRateRed,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Text(
+                                        text = if (isConnected) "Active" else "Offline",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        // Status Info Column
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isConnected) StepsGreen else HeartRateRed)
+                                )
+                                Text(
+                                    text = if (isConnected) "Smart Ring Connected" else "Not Connected",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surface
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                                    Text(
+                                        text = connectionState,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    deviceStatus?.batteryVoltageMv?.let { mv ->
+                                        Text(
+                                            text = "Bus Voltage: ${mv}mV",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+
+                            deviceStatus?.caseBattery?.let { case ->
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = TempAmber.copy(alpha = 0.15f)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(Icons.Default.BatteryChargingFull, contentDescription = null, tint = TempAmber, modifier = Modifier.size(14.dp))
+                                        Text(
+                                            text = "Charging Case: ${case.percent}%",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = TempAmber
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Peloton & Fitness Workout Bluetooth HR Broadcast Card
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = if (isBroadcasting) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -93,85 +299,101 @@ fun DashboardScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(12.dp)
+                                    .size(38.dp)
                                     .clip(CircleShape)
-                                    .background(if (isConnected) StepsGreen else HeartRateRed)
-                            )
-                            Text(
-                                text = "RingConn Gen 2",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        if (!isConnected) {
-                            FilledTonalButton(
-                                onClick = {
-                                    BleConnectionManager.startScan()
-                                    showDeviceSheet = true
-                                },
-                                shape = RoundedCornerShape(12.dp)
+                                    .background(if (isBroadcasting) HeartRateRed.copy(alpha = 0.2f) else MaterialTheme.colorScheme.outlineVariant),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Default.BluetoothSearching, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Scan & Connect")
+                                Icon(
+                                    Icons.AutoMirrored.Filled.DirectionsBike,
+                                    contentDescription = null,
+                                    tint = if (isBroadcasting) HeartRateRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
-                        } else {
-                            OutlinedButton(
-                                onClick = { BleConnectionManager.disconnect() },
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Disconnect")
-                            }
-                        }
-                    }
 
-                    Text(
-                        text = connectionState,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    // Battery & Voltage indicators
-                    if (isConnected && deviceStatus != null) {
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            BatteryBadge(
-                                title = "Ring Battery",
-                                percent = deviceStatus!!.batteryPercent,
-                                isCharging = deviceStatus!!.isOnCharger,
-                                extra = deviceStatus!!.batteryVoltageMv?.let { "${it}mV" }
-                            )
-
-                            deviceStatus!!.caseBattery?.let { case ->
-                                BatteryBadge(
-                                    title = "Case Battery",
-                                    percent = case.percent,
-                                    isCharging = case.isCharging,
-                                    extra = if (case.isCharging) "Charging" else "In case"
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = "Peloton HR Broadcast",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (isBroadcasting && broadcastBpm != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = HeartRateRed.copy(alpha = 0.2f)
+                                        ) {
+                                            Text(
+                                                text = "$broadcastBpm BPM",
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = HeartRateRed
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = if (isBroadcasting) (connectedReceiver?.let { "Connected to $it" } ?: broadcastStatus) else "Standard BLE HRS 0x180D",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isBroadcasting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
+
+                        Switch(
+                            checked = isBroadcasting,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    com.randallengineering.sleepasringconn.service.HrBroadcastService.start(context)
+                                } else {
+                                    com.randallengineering.sleepasringconn.service.HrBroadcastService.stop(context)
+                                }
+                            }
+                        )
                     }
                 }
             }
         }
 
-        // 2. Live Vitals Grid
+        // 4. Live Vitals Grid
         item {
-            Text(
-                text = "Live Metrics",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                    Text(
+                        text = "Live Telemetry",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (isLiveMonitoring) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = StepsGreen.copy(alpha = 0.2f)
+                    ) {
+                        Text(
+                            text = "Streaming Active",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = StepsGreen
+                        )
+                    }
+                }
+            }
         }
 
         item {
@@ -179,7 +401,7 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                MetricCard(
+                PolishedMetricCard(
                     modifier = Modifier.weight(1f),
                     title = "Heart Rate",
                     value = liveHr?.toString() ?: "--",
@@ -189,7 +411,7 @@ fun DashboardScreen(
                     isLive = isLiveMonitoring
                 )
 
-                MetricCard(
+                PolishedMetricCard(
                     modifier = Modifier.weight(1f),
                     title = "HRV (RMSSD)",
                     value = liveHrv?.toString() ?: "--",
@@ -206,7 +428,7 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                MetricCard(
+                PolishedMetricCard(
                     modifier = Modifier.weight(1f),
                     title = "Blood Oxygen",
                     value = liveSpo2?.toString() ?: "--",
@@ -216,7 +438,7 @@ fun DashboardScreen(
                     isLive = isLiveMonitoring
                 )
 
-                MetricCard(
+                PolishedMetricCard(
                     modifier = Modifier.weight(1f),
                     title = "Skin Temp",
                     value = deviceStatus?.skinTemperature?.let { "%.1f".format(it.celsius) } ?: "--",
@@ -233,26 +455,29 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                MetricCard(
+                PolishedMetricCard(
                     modifier = Modifier.weight(1f),
                     title = "Steps (15m)",
                     value = deviceStatus?.quarterHourSteps?.toString() ?: "--",
                     unit = "steps",
-                    icon = Icons.Default.DirectionsWalk,
+                    icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                     color = StepsGreen,
                     isLive = isConnected
                 )
             }
         }
 
-        // 3. Accelerometer & Motion Telemetry (Sleep as Android Actigraphy)
+        // 5. Accelerometer & Actigraphy Card (Sleep as Android Motion)
         item {
-            Text(
-                text = "Accelerometer & Actigraphy",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.ShowChart, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                Text(
+                    text = "Motion & Actigraphy",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
 
         item {
@@ -274,21 +499,35 @@ fun DashboardScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Text(
-                                text = "Motion & Accelerometer",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
+                            Column {
+                                Text(
+                                    text = "3-Axis Ring Accelerometer",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "X: %.2f · Y: %.2f · Z: %.2f m/s²".format(rawAccel.first, rawAccel.second, rawAccel.third),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
 
-                        // Sleep stage classification badge based on actigraphy
                         val (stageText, stageColor) = when {
-                            last10sMaxAccel < 0.05f -> "Still (Deep/REM Stage)" to StepsGreen
+                            last10sMaxAccel < 0.05f -> "Still (Deep/REM)" to StepsGreen
                             last10sMaxAccel in 0.05f..0.30f -> "Light Motion" to TempAmber
-                            else -> "Active (Awake Stage)" to HeartRateRed
+                            else -> "Active (Awake)" to HeartRateRed
                         }
 
                         Surface(
@@ -332,7 +571,6 @@ fun DashboardScreen(
                         }
                     }
 
-                    // Live Graphical Motion Visualizer (Seismograph Waveform & 3D Tilt Reticle)
                     LiveMotionVisualizer(
                         magnitude = currentMagnitude,
                         x = rawAccel.first,
@@ -340,114 +578,21 @@ fun DashboardScreen(
                         z = rawAccel.third,
                         peak10s = last10sMaxAccel
                     )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "3-Axis: X: %.2f · Y: %.2f · Z: %.2f m/s²".format(rawAccel.first, rawAccel.second, rawAccel.third),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Ring Motion Sensor",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
                 }
             }
         }
 
-        // 4. Peloton / Fitness Workout HR Broadcast Quick Card
+        // 6. Controls & Actions
         item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.elevatedCardColors(
-                    containerColor = if (isBroadcasting) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                Text(
+                    text = "Controls & Actions",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
                 )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(if (isBroadcasting) HeartRateRed else MaterialTheme.colorScheme.outlineVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.DirectionsBike,
-                                contentDescription = null,
-                                tint = if (isBroadcasting) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-
-                        Column {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(
-                                    text = "Peloton HR Broadcast",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (isBroadcasting && broadcastBpm != null) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = HeartRateRed.copy(alpha = 0.2f)
-                                    ) {
-                                        Text(
-                                            text = "$broadcastBpm BPM",
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = HeartRateRed
-                                        )
-                                    }
-                                }
-                            }
-                            Text(
-                                text = if (isBroadcasting) (connectedReceiver?.let { "Connected to $it" } ?: broadcastStatus) else "Standard BLE HRS 0x180D",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isBroadcasting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Switch(
-                        checked = isBroadcasting,
-                        onCheckedChange = { enable ->
-                            if (enable) {
-                                com.randallengineering.sleepasringconn.service.HrBroadcastService.start(context)
-                            } else {
-                                com.randallengineering.sleepasringconn.service.HrBroadcastService.stop(context)
-                            }
-                        }
-                    )
-                }
             }
-        }
-
-        // 5. Quick Action Controls
-        item {
-            Text(
-                text = "Controls & Actions",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
         }
 
         item {
@@ -517,6 +662,7 @@ fun DashboardScreen(
                         Spacer(Modifier.width(8.dp))
                         Text("Live SpO2")
                     }
+
                     if (isRingLedOn) {
                         FilledTonalButton(
                             modifier = Modifier.weight(1f),
@@ -541,7 +687,7 @@ fun DashboardScreen(
                         ) {
                             Icon(Icons.Default.Highlight, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Light Ring LED")
+                            Text("Light LED")
                         }
                     }
 
@@ -552,7 +698,7 @@ fun DashboardScreen(
                     ) {
                         Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("BLE Console")
+                        Text("Console")
                     }
                 }
             }
@@ -718,32 +864,7 @@ fun DashboardScreen(
 }
 
 @Composable
-fun BatteryBadge(
-    title: String,
-    percent: Int,
-    isCharging: Boolean,
-    extra: String? = null
-) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(
-            if (isCharging) Icons.Default.BatteryChargingFull else Icons.Default.BatteryFull,
-            contentDescription = null,
-            tint = if (isCharging) StepsGreen else MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(24.dp)
-        )
-        Column {
-            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(
-                "$percent%" + (extra?.let { " ($it)" } ?: ""),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
-fun MetricCard(
+fun PolishedMetricCard(
     modifier: Modifier = Modifier,
     title: String,
     value: String,
@@ -756,20 +877,28 @@ fun MetricCard(
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
+                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(color.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+                }
             }
 
             Row(
@@ -801,7 +930,6 @@ fun LiveMotionVisualizer(
     z: Float,
     peak10s: Float
 ) {
-    // Rolling buffer of the last 60 live magnitude samples for the seismograph
     val history = remember { mutableStateListOf<Float>() }
 
     LaunchedEffect(magnitude) {
@@ -820,7 +948,7 @@ fun LiveMotionVisualizer(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surface)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -860,20 +988,17 @@ fun LiveMotionVisualizer(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 1. Live Waveform / Seismograph Canvas
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.3f))
+                    .background(Color.Black.copy(alpha = 0.35f))
             ) {
                 Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp)) {
                     val w = size.width
                     val h = size.height
-                    val maxScale = 2.0f // max 2.0 m/s^2 for full height
 
-                    // Draw grid lines
                     val gridColor = Color.White.copy(alpha = 0.08f)
                     drawLine(gridColor, Offset(0f, h * 0.25f), Offset(w, h * 0.25f), strokeWidth = 1f)
                     drawLine(gridColor, Offset(0f, h * 0.50f), Offset(w, h * 0.50f), strokeWidth = 1f)
@@ -884,79 +1009,62 @@ fun LiveMotionVisualizer(
                         val path = Path()
                         val fillPath = Path()
 
-                        val startIdx = (60 - history.size).coerceAtLeast(0)
-                        val startX = startIdx * stepX
-                        val startY = h - (history[0] / maxScale).coerceIn(0f, 1f) * h
-
-                        path.moveTo(startX, startY)
-                        fillPath.moveTo(startX, h)
-                        fillPath.lineTo(startX, startY)
+                        val firstY = h - (history[0] / 2.0f).coerceIn(0f, 1f) * h
+                        path.moveTo(0f, firstY)
+                        fillPath.moveTo(0f, h)
+                        fillPath.lineTo(0f, firstY)
 
                         for (i in 1 until history.size) {
-                            val curX = (startIdx + i) * stepX
-                            val curY = h - (history[i] / maxScale).coerceIn(0f, 1f) * (h - 4f)
-                            path.lineTo(curX, curY)
-                            fillPath.lineTo(curX, curY)
+                            val currX = i * stepX
+                            val currY = h - (history[i] / 2.0f).coerceIn(0f, 1f) * h
+                            path.lineTo(currX, currY)
+                            fillPath.lineTo(currX, currY)
                         }
 
-                        fillPath.lineTo(w, h)
+                        val lastX = (history.size - 1) * stepX
+                        fillPath.lineTo(lastX, h)
                         fillPath.close()
 
                         drawPath(
                             path = fillPath,
                             brush = Brush.verticalGradient(
-                                colors = listOf(motionColor.copy(alpha = 0.35f), motionColor.copy(alpha = 0.02f)),
-                                startY = 0f,
-                                endY = h
+                                listOf(motionColor.copy(alpha = 0.35f), Color.Transparent)
                             )
                         )
 
                         drawPath(
                             path = path,
                             color = motionColor,
-                            style = Stroke(width = 2.5f, cap = StrokeCap.Round)
+                            style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
                         )
                     }
                 }
             }
 
-            // 2. 3D Tilt Reticle & Motion Halo
+            // 3D Tilt Reticle
             Box(
                 modifier = Modifier
                     .size(100.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color.Black.copy(alpha = 0.3f)),
+                    .background(Color.Black.copy(alpha = 0.35f)),
                 contentAlignment = Alignment.Center
             ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val cx = size.width / 2f
-                    val cy = size.height / 2f
-                    val r = size.minDimension / 2f - 8f
+                Canvas(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                    val center = Offset(size.width / 2, size.height / 2)
+                    val radius = size.minDimension / 2
 
-                    // Outer Target Rings
-                    drawCircle(Color.White.copy(alpha = 0.12f), radius = r, center = Offset(cx, cy), style = Stroke(width = 1.5f))
-                    drawCircle(Color.White.copy(alpha = 0.06f), radius = r * 0.5f, center = Offset(cx, cy), style = Stroke(width = 1f))
+                    drawCircle(Color.White.copy(alpha = 0.1f), radius = radius, center = center, style = Stroke(1.dp.toPx()))
+                    drawCircle(Color.White.copy(alpha = 0.06f), radius = radius * 0.5f, center = center, style = Stroke(1.dp.toPx()))
 
-                    // Crosshairs
-                    drawLine(Color.White.copy(alpha = 0.15f), Offset(cx - r, cy), Offset(cx + r, cy), strokeWidth = 1f)
-                    drawLine(Color.White.copy(alpha = 0.15f), Offset(cx, cy - r), Offset(cx, cy + r), strokeWidth = 1f)
-
-                    // Dynamic Pulsating Motion Halo
-                    val haloRadius = (r * 0.3f + (magnitude / 2.0f) * r * 0.7f).coerceIn(r * 0.3f, r)
-                    drawCircle(
-                        color = motionColor.copy(alpha = 0.25f),
-                        radius = haloRadius,
-                        center = Offset(cx, cy)
+                    val normX = (x / 9.81f).coerceIn(-1f, 1f)
+                    val normY = (y / 9.81f).coerceIn(-1f, 1f)
+                    val bubbleOffset = Offset(
+                        center.x + normX * (radius * 0.75f),
+                        center.y - normY * (radius * 0.75f)
                     )
 
-                    // Tilt Bubble based on X, Y pitch/roll (-9.8 to +9.8 m/s^2 mapped to radius)
-                    val bubbleOffsetX = (x / 9.8f).coerceIn(-1f, 1f) * (r * 0.75f)
-                    val bubbleOffsetY = -(y / 9.8f).coerceIn(-1f, 1f) * (r * 0.75f)
-                    val bubbleCenter = Offset(cx + bubbleOffsetX, cy + bubbleOffsetY)
-
-                    // Draw Tilt Center Bubble
-                    drawCircle(motionColor, radius = 6.dp.toPx(), center = bubbleCenter)
-                    drawCircle(Color.White, radius = 2.5.dp.toPx(), center = bubbleCenter)
+                    drawCircle(motionColor.copy(alpha = 0.3f), radius = 10.dp.toPx(), center = bubbleOffset)
+                    drawCircle(motionColor, radius = 5.dp.toPx(), center = bubbleOffset)
                 }
             }
         }
