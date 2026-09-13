@@ -64,18 +64,56 @@ object BleConnectionManager {
     private val _recentLogs = MutableStateFlow<List<String>>(emptyList())
     val recentLogs = _recentLogs.asStateFlow()
 
-    private val commandQueue = ConcurrentLinkedQueue<ByteArray>()
-    private var isWriting = false
+    private val commandChannel = kotlinx.coroutines.channels.Channel<ByteArray>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    private var isQueueWorkerRunning = false
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     // Polling job for live metrics
     private var livePollJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var reconnectDelayMs = 1500L
 
     // Movement tracking buffer for Sleep as Android
     private val movementBuffer = mutableListOf<Float>()
     private var lastMovementFlushTime = System.currentTimeMillis()
 
     private val PREF_KEY_MAC = "paired_ring_mac"
+
+    init {
+        startCommandQueueWorker()
+    }
+
+    private fun startCommandQueueWorker() {
+        if (isQueueWorkerRunning) return
+        isQueueWorkerRunning = true
+        coroutineScope.launch {
+            for (cmd in commandChannel) {
+                val gatt = bluetoothGatt
+                val writeChar = writeCharacteristic
+                if (gatt != null && writeChar != null && _isConnected.value) {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            gatt.writeCharacteristic(
+                                writeChar,
+                                cmd,
+                                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            )
+                        } else {
+                            @Suppress("DEPRECATION")
+                            writeChar.value = cmd
+                            @Suppress("DEPRECATION")
+                            writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            @Suppress("DEPRECATION")
+                            gatt.writeCharacteristic(writeChar)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error writing BLE packet", e)
+                    }
+                    delay(35)
+                }
+            }
+        }
+    }
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -164,6 +202,7 @@ object BleConnectionManager {
 
     fun connect(device: BluetoothDevice) {
         stopScan()
+        reconnectJob?.cancel()
         targetDeviceAddress = device.address
         deviceMacBytes = RingAuth.parseMacString(device.address)
 
@@ -175,17 +214,33 @@ object BleConnectionManager {
         _connectionState.value = "Connecting to ${device.name ?: device.address}..."
         log("Connecting to ${device.address}...")
 
-        bluetoothGatt?.close()
-        bluetoothGatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        coroutineScope.launch {
+            try {
+                bluetoothGatt?.disconnect()
+                bluetoothGatt?.close()
+                bluetoothGatt = null
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cleaning previous GATT", e)
+            }
+            delay(150)
+            bluetoothGatt = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        }
     }
 
     fun disconnect() {
-        log("Disconnecting...")
+        log("Disconnecting by user request...")
+        targetDeviceAddress = null
+        reconnectJob?.cancel()
         livePollJob?.cancel()
         _isRingLedOn.value = false
-        bluetoothGatt?.disconnect()
-        bluetoothGatt?.close()
+        try {
+            bluetoothGatt?.disconnect()
+            bluetoothGatt?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error during disconnect", e)
+        }
         bluetoothGatt = null
+        writeCharacteristic = null
         _isConnected.value = false
         _connectionState.value = "Disconnected"
     }
@@ -193,9 +248,10 @@ object BleConnectionManager {
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                log("GATT Connected. Requesting MTU 512...")
+                log("GATT Connected (status $status). Requesting MTU 512...")
                 _isConnected.value = true
                 _connectionState.value = "Connected. Configuring..."
+                reconnectDelayMs = 1500L
                 gatt.requestMtu(512)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 log("GATT Disconnected (status: $status)")
@@ -203,18 +259,30 @@ object BleConnectionManager {
                 _connectionState.value = "Disconnected"
                 livePollJob?.cancel()
                 writeCharacteristic = null
-                gatt.close()
+
+                try {
+                    gatt.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error closing GATT on disconnect", e)
+                }
                 if (bluetoothGatt == gatt) {
                     bluetoothGatt = null
                 }
 
-                // If not explicitly disconnected by user, auto-reconnect
+                if (status == 133) {
+                    log("GATT Status 133: Device busy or unbonded. Checking official app...")
+                }
+
+                // If not explicitly disconnected by user, auto-reconnect with backoff
                 val savedMac = targetDeviceAddress
                 if (savedMac != null) {
-                    coroutineScope.launch {
-                        delay(1500)
+                    reconnectJob?.cancel()
+                    val waitMs = reconnectDelayMs
+                    reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(16000L)
+                    reconnectJob = coroutineScope.launch {
+                        delay(waitMs)
                         if (!_isConnected.value && targetDeviceAddress == savedMac) {
-                            log("Reconnecting to $savedMac...")
+                            log("Reconnecting to $savedMac (attempting in ${waitMs}ms)...")
                             bluetoothAdapter?.getRemoteDevice(savedMac)?.let { dev ->
                                 connect(dev)
                             }
@@ -260,6 +328,7 @@ object BleConnectionManager {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 log("Notify CCCD enabled! Initiating status handshake 01 00 00...")
                 _connectionState.value = "Connected & Authenticating"
+                reconnectDelayMs = 1500L
                 coroutineScope.launch {
                     delay(100)
                     // Initial status read to prompt challenge response
@@ -293,8 +362,7 @@ object BleConnectionManager {
         }
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            isWriting = false
-            processNextCommand()
+            // Write completed (WRITE_TYPE_NO_RESPONSE managed via channel delay)
         }
     }
 
@@ -315,36 +383,7 @@ object BleConnectionManager {
     }
 
     fun sendCommand(cmd: ByteArray) {
-        val wasEmpty = commandQueue.isEmpty()
-        commandQueue.add(cmd)
-        if (wasEmpty) {
-            processNextCommand()
-        }
-    }
-
-    private fun processNextCommand() {
-        val gatt = bluetoothGatt ?: return
-        val writeChar = writeCharacteristic ?: return
-        val nextCmd = commandQueue.poll() ?: return
-
-        coroutineScope.launch {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeCharacteristic(
-                    writeChar,
-                    nextCmd,
-                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                writeChar.value = nextCmd
-                @Suppress("DEPRECATION")
-                writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                @Suppress("DEPRECATION")
-                gatt.writeCharacteristic(writeChar)
-            }
-            delay(30)
-            processNextCommand()
-        }
+        commandChannel.trySend(cmd)
     }
 
     private fun handleIncomingPacket(packet: ByteArray) {
