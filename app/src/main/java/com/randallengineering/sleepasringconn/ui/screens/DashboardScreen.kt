@@ -45,6 +45,10 @@ fun DashboardScreen(
     val isSyncing by BleConnectionManager.isSyncing.collectAsState()
     val isRingLedOn by BleConnectionManager.isRingLedOn.collectAsState()
     val discoveredDevices by BleConnectionManager.discoveredDevices.collectAsState()
+    val isBroadcasting by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.isBroadcasting.collectAsState()
+    val broadcastStatus by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.statusMessage.collectAsState()
+    val connectedReceiver by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.connectedDeviceName.collectAsState()
+    val broadcastBpm by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.lastBroadcastBpm.collectAsState()
 
     var showDeviceSheet by remember { mutableStateOf(false) }
 
@@ -356,7 +360,87 @@ fun DashboardScreen(
             }
         }
 
-        // 4. Quick Action Controls
+        // 4. Peloton / Fitness Workout HR Broadcast Quick Card
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = if (isBroadcasting) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(if (isBroadcasting) HeartRateRed else MaterialTheme.colorScheme.outlineVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.DirectionsBike,
+                                contentDescription = null,
+                                tint = if (isBroadcasting) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "Peloton HR Broadcast",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (isBroadcasting && broadcastBpm != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = HeartRateRed.copy(alpha = 0.2f)
+                                    ) {
+                                        Text(
+                                            text = "$broadcastBpm BPM",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = HeartRateRed
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = if (isBroadcasting) (connectedReceiver?.let { "Connected to $it" } ?: broadcastStatus) else "Standard BLE HRS 0x180D",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isBroadcasting) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = isBroadcasting,
+                        onCheckedChange = { enable ->
+                            if (enable) {
+                                com.randallengineering.sleepasringconn.service.HrBroadcastService.start(context)
+                            } else {
+                                com.randallengineering.sleepasringconn.service.HrBroadcastService.stop(context)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
+        // 5. Quick Action Controls
         item {
             Text(
                 text = "Controls & Actions",

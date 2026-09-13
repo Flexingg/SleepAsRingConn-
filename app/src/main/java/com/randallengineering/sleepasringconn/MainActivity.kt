@@ -19,6 +19,7 @@ import com.randallengineering.sleepasringconn.service.RingSyncService
 import com.randallengineering.sleepasringconn.ui.screens.AnalyticsScreen
 import com.randallengineering.sleepasringconn.ui.screens.DashboardScreen
 import com.randallengineering.sleepasringconn.ui.screens.DiagnosticsScreen
+import com.randallengineering.sleepasringconn.ui.screens.GoalsScreen
 import com.randallengineering.sleepasringconn.ui.screens.IntegrationsScreen
 import com.randallengineering.sleepasringconn.ui.screens.SleepScreen
 import com.randallengineering.sleepasringconn.ui.theme.SleepAsRingConnTheme
@@ -27,6 +28,7 @@ enum class Screen(val title: String, val icon: ImageVector) {
     Dashboard("Dashboard", Icons.Default.Dashboard),
     Sleep("Sleep", Icons.Default.Bedtime),
     Analytics("Analytics", Icons.Default.Insights),
+    Goals("Goals", Icons.Default.EmojiEvents),
     Integrations("Integrations", Icons.Default.HealthAndSafety),
     Diagnostics("Console", Icons.Default.Terminal)
 }
@@ -70,6 +72,7 @@ class MainActivity : ComponentActivity() {
                             )
                             Screen.Sleep -> SleepScreen()
                             Screen.Analytics -> AnalyticsScreen()
+                            Screen.Goals -> GoalsScreen()
                             Screen.Integrations -> IntegrationsScreen()
                             Screen.Diagnostics -> DiagnosticsScreen()
                         }
@@ -85,6 +88,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
         } else {
             permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
