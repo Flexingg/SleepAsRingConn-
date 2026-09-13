@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -352,10 +353,147 @@ fun IntegrationsScreen() {
                             },
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
                             Text("Send Test Ping to SaA")
                         }
+                    }
+                }
+            }
+        }
+
+        // 3. Peloton & Fitness Equipment Bluetooth Heart Rate Broadcast
+        item {
+            val isBroadcasting by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.isBroadcasting.collectAsState()
+            val broadcastStatus by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.statusMessage.collectAsState()
+            val connectedDevName by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.connectedDeviceName.collectAsState()
+            val lastBpm by com.randallengineering.sleepasringconn.ble.HrBroadcastManager.lastBroadcastBpm.collectAsState()
+
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Icon(
+                                Icons.Default.DirectionsBike,
+                                contentDescription = null,
+                                tint = com.randallengineering.sleepasringconn.ui.theme.HeartRateRed,
+                                modifier = Modifier.size(28.dp)
+                            )
+                            Column {
+                                Text("Peloton & Fitness HR Broadcast", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (isBroadcasting) broadcastStatus else "Standby (Broadcast off)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isBroadcasting) com.randallengineering.sleepasringconn.ui.theme.HeartRateRed else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "Emulates a standard Bluetooth Low Energy Heart Rate Monitor (HRS 0x180D / 0x2A37). Transmits live PPG heart rate from your RingConn directly to Peloton Bike/Tread, Zwift, Garmin, and Apple Watch.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Bluetooth HR Broadcast", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                if (isBroadcasting) "Broadcasting live HR telemetry" else "Enable during workouts to broadcast",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = isBroadcasting,
+                            onCheckedChange = { enable ->
+                                if (enable) {
+                                    com.randallengineering.sleepasringconn.service.HrBroadcastService.start(context)
+                                } else {
+                                    com.randallengineering.sleepasringconn.service.HrBroadcastService.stop(context)
+                                }
+                            }
+                        )
+                    }
+
+                    if (isBroadcasting) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text(
+                                        if (connectedDevName != null) "Connected Receiver" else "Broadcasting As",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = connectedDevName ?: "RingConn HR Broadcast",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Favorite,
+                                        contentDescription = null,
+                                        tint = com.randallengineering.sleepasringconn.ui.theme.HeartRateRed,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = lastBpm?.let { "$it BPM" } ?: "-- BPM",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = com.randallengineering.sleepasringconn.ui.theme.HeartRateRed
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Pairing Instructions
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(start = 4.dp)
+                    ) {
+                        Text("How to pair with Peloton / Fitness Equipment:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text("1. Turn on the broadcast switch above.", style = MaterialTheme.typography.bodySmall)
+                        Text("2. On Peloton: Tap Settings (top-right) → 'Heart Rate Monitor'.", style = MaterialTheme.typography.bodySmall)
+                        Text("3. Look for 'RingConn HR Broadcast' in the list and tap 'Connect'.", style = MaterialTheme.typography.bodySmall)
+                        Text("4. Your live ring heart rate will now appear in your Peloton workout hud and Strive score!", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
