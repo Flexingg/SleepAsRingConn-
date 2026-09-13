@@ -20,6 +20,32 @@ data class StagedEpoch(
     val motionIntensity: Int
 )
 
+data class SleepBout(
+    val stage: SleepStage,
+    val startTimeMillis: Long,
+    val endTimeMillis: Long,
+    val durationMinutes: Int,
+    val avgHr: Int?,
+    val peakMotion: Int
+)
+
+data class SleepCycle(
+    val cycleIndex: Int,
+    val startTimeMillis: Long,
+    val endTimeMillis: Long,
+    val durationMinutes: Int,
+    val deepMinutes: Int,
+    val remMinutes: Int,
+    val lightMinutes: Int,
+    val awakeMinutes: Int
+)
+
+data class VitalExtreme(
+    val value: Double,
+    val timestampMillis: Long,
+    val unit: String
+)
+
 data class SleepSession(
     val startTimeMillis: Long,
     val endTimeMillis: Long,
@@ -36,7 +62,26 @@ data class SleepSession(
     val sleepScore: Int,
     val epochs: List<StagedEpoch>,
     val isNap: Boolean = false,
-    val sessionLabel: String = if (isNap) "Daytime Nap" else "Overnight Sleep"
+    val sessionLabel: String = if (isNap) "Daytime Nap" else "Overnight Sleep",
+
+    // In-depth timings & data overload metrics:
+    val sleepOnsetMillis: Long = startTimeMillis,
+    val sleepLatencyMinutes: Int = 0,
+    val finalWakeMillis: Long = endTimeMillis,
+    val midSleepMillis: Long = (startTimeMillis + endTimeMillis) / 2,
+    val sleepEfficiencyPercent: Int = if (totalInBedMinutes > 0) ((sleepDurationMinutes.toFloat() / totalInBedMinutes) * 100).toInt() else 0,
+    val cycles: List<SleepCycle> = emptyList(),
+    val deepBouts: List<SleepBout> = emptyList(),
+    val remBouts: List<SleepBout> = emptyList(),
+    val awakenings: List<SleepBout> = emptyList(),
+    val lowestHr: VitalExtreme? = null,
+    val peakHr: VitalExtreme? = null,
+    val lowestSpo2: VitalExtreme? = null,
+    val peakHrv: VitalExtreme? = null,
+    val minRespiratoryRate: Double? = null,
+    val maxRespiratoryRate: Double? = null,
+    val restlessEpochsCount: Int = 0,
+    val stillEpochsPercent: Int = 100
 )
 
 object SleepStagingEngine {
@@ -203,6 +248,36 @@ object SleepStagingEngine {
 
         val score = calculateSleepScore(sleepDurationMinutes, deepMinutes, remMinutes, avgHr, avgSpo2)
 
+        val firstSleepIdx = stagedEpochs.indexOfFirst { it.stage != SleepStage.AWAKE }
+        val sleepOnsetMillis = if (firstSleepIdx >= 0) stagedEpochs[firstSleepIdx].timestampMillis else startTime
+        val sleepLatencyMinutes = ((sleepOnsetMillis - startTime) / 60_000L).toInt().coerceAtLeast(0)
+
+        val lastSleepIdx = stagedEpochs.indexOfLast { it.stage != SleepStage.AWAKE }
+        val finalWakeMillis = if (lastSleepIdx >= 0) stagedEpochs[lastSleepIdx].timestampMillis + 150_000L else endTime
+        val midSleepMillis = startTime + (endTime - startTime) / 2
+
+        val deepBouts = extractBouts(stagedEpochs, SleepStage.DEEP)
+        val remBouts = extractBouts(stagedEpochs, SleepStage.REM)
+        val awakenings = extractBouts(stagedEpochs, SleepStage.AWAKE).filter { it.startTimeMillis >= sleepOnsetMillis && it.endTimeMillis <= finalWakeMillis }
+        val cycles = extractSleepCycles(stagedEpochs)
+
+        val lowestHr = stagedEpochs.filter { it.heartRate != null }.minByOrNull { it.heartRate!! }?.let {
+            VitalExtreme(it.heartRate!!.toDouble(), it.timestampMillis, "BPM")
+        }
+        val peakHr = stagedEpochs.filter { it.heartRate != null }.maxByOrNull { it.heartRate!! }?.let {
+            VitalExtreme(it.heartRate!!.toDouble(), it.timestampMillis, "BPM")
+        }
+        val lowestSpo2 = stagedEpochs.filter { it.spo2 != null }.minByOrNull { it.spo2!! }?.let {
+            VitalExtreme(it.spo2!!.toDouble(), it.timestampMillis, "%")
+        }
+        val peakHrv = stagedEpochs.filter { it.hrvRmssd != null }.maxByOrNull { it.hrvRmssd!! }?.let {
+            VitalExtreme(it.hrvRmssd!!.toDouble(), it.timestampMillis, "ms")
+        }
+        val minRr = stagedEpochs.mapNotNull { it.respiratoryRate }.minOrNull()
+        val maxRr = stagedEpochs.mapNotNull { it.respiratoryRate }.maxOrNull()
+        val restlessCount = stagedEpochs.count { it.motionIntensity > 2 }
+        val stillPercent = if (stagedEpochs.isNotEmpty()) (stagedEpochs.count { it.motionIntensity <= 1 } * 100) / stagedEpochs.size else 100
+
         return SleepSession(
             startTimeMillis = startTime,
             endTimeMillis = endTime,
@@ -217,8 +292,98 @@ object SleepStagingEngine {
             averageSpo2 = avgSpo2,
             averageRespiratoryRate = avgRr,
             sleepScore = score,
-            epochs = stagedEpochs
+            epochs = stagedEpochs,
+            isNap = false,
+            sessionLabel = "Overnight Sleep",
+            sleepOnsetMillis = sleepOnsetMillis,
+            sleepLatencyMinutes = sleepLatencyMinutes,
+            finalWakeMillis = finalWakeMillis,
+            midSleepMillis = midSleepMillis,
+            sleepEfficiencyPercent = if (totalInBedMinutes > 0) ((sleepDurationMinutes.toFloat() / totalInBedMinutes) * 100).toInt() else 0,
+            cycles = cycles,
+            deepBouts = deepBouts,
+            remBouts = remBouts,
+            awakenings = awakenings,
+            lowestHr = lowestHr,
+            peakHr = peakHr,
+            lowestSpo2 = lowestSpo2,
+            peakHrv = peakHrv,
+            minRespiratoryRate = minRr,
+            maxRespiratoryRate = maxRr,
+            restlessEpochsCount = restlessCount,
+            stillEpochsPercent = stillPercent
         )
+    }
+
+    private fun extractBouts(epochs: List<StagedEpoch>, targetStage: SleepStage): List<SleepBout> {
+        val bouts = mutableListOf<SleepBout>()
+        var currentRun = mutableListOf<StagedEpoch>()
+
+        for (ep in epochs) {
+            if (ep.stage == targetStage) {
+                currentRun.add(ep)
+            } else {
+                if (currentRun.isNotEmpty()) {
+                    val start = currentRun.first().timestampMillis
+                    val end = currentRun.last().timestampMillis + 150_000L
+                    val dur = ((end - start) / 60_000L).toInt()
+                    val hrs = currentRun.mapNotNull { it.heartRate }
+                    val avgHr = if (hrs.isNotEmpty()) hrs.average().toInt() else null
+                    val peakMot = currentRun.maxOfOrNull { it.motionIntensity } ?: 0
+                    bouts.add(SleepBout(targetStage, start, end, dur, avgHr, peakMot))
+                    currentRun = mutableListOf()
+                }
+            }
+        }
+        if (currentRun.isNotEmpty()) {
+            val start = currentRun.first().timestampMillis
+            val end = currentRun.last().timestampMillis + 150_000L
+            val dur = ((end - start) / 60_000L).toInt()
+            val hrs = currentRun.mapNotNull { it.heartRate }
+            val avgHr = if (hrs.isNotEmpty()) hrs.average().toInt() else null
+            val peakMot = currentRun.maxOfOrNull { it.motionIntensity } ?: 0
+            bouts.add(SleepBout(targetStage, start, end, dur, avgHr, peakMot))
+        }
+        return bouts
+    }
+
+    private fun extractSleepCycles(epochs: List<StagedEpoch>): List<SleepCycle> {
+        if (epochs.isEmpty()) return emptyList()
+        val cycles = mutableListOf<SleepCycle>()
+        var cycleIdx = 1
+        var cycleEpochs = mutableListOf<StagedEpoch>()
+        var inRem = false
+
+        for (ep in epochs) {
+            cycleEpochs.add(ep)
+            if (ep.stage == SleepStage.REM) {
+                inRem = true
+            } else if (inRem && (ep.stage == SleepStage.LIGHT || ep.stage == SleepStage.DEEP || ep.stage == SleepStage.AWAKE)) {
+                if (cycleEpochs.size >= 16) { // >= 40 min
+                    val start = cycleEpochs.first().timestampMillis
+                    val end = cycleEpochs.last().timestampMillis + 150_000L
+                    val dur = ((end - start) / 60_000L).toInt()
+                    val deep = cycleEpochs.count { it.stage == SleepStage.DEEP } * 5 / 2
+                    val rem = cycleEpochs.count { it.stage == SleepStage.REM } * 5 / 2
+                    val light = cycleEpochs.count { it.stage == SleepStage.LIGHT } * 5 / 2
+                    val awake = cycleEpochs.count { it.stage == SleepStage.AWAKE } * 5 / 2
+                    cycles.add(SleepCycle(cycleIdx++, start, end, dur, deep, rem, light, awake))
+                    cycleEpochs = mutableListOf()
+                    inRem = false
+                }
+            }
+        }
+        if (cycleEpochs.size >= 8) {
+            val start = cycleEpochs.first().timestampMillis
+            val end = cycleEpochs.last().timestampMillis + 150_000L
+            val dur = ((end - start) / 60_000L).toInt()
+            val deep = cycleEpochs.count { it.stage == SleepStage.DEEP } * 5 / 2
+            val rem = cycleEpochs.count { it.stage == SleepStage.REM } * 5 / 2
+            val light = cycleEpochs.count { it.stage == SleepStage.LIGHT } * 5 / 2
+            val awake = cycleEpochs.count { it.stage == SleepStage.AWAKE } * 5 / 2
+            cycles.add(SleepCycle(cycleIdx, start, end, dur, deep, rem, light, awake))
+        }
+        return cycles
     }
 
     private fun smoothStages(stages: List<SleepStage>): List<SleepStage> {

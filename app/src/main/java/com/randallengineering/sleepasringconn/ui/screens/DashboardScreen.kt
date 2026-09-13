@@ -2,6 +2,7 @@ package com.randallengineering.sleepasringconn.ui.screens
 
 import android.bluetooth.BluetoothDevice
 import androidx.compose.animation.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -16,7 +17,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -322,14 +328,28 @@ fun DashboardScreen(
                         }
                     }
 
+                    // Live Graphical Motion Visualizer (Seismograph Waveform & 3D Tilt Reticle)
+                    LiveMotionVisualizer(
+                        magnitude = currentMagnitude,
+                        x = rawAccel.first,
+                        y = rawAccel.second,
+                        z = rawAccel.third,
+                        peak10s = last10sMaxAccel
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             text = "3-Axis: X: %.2f · Y: %.2f · Z: %.2f m/s²".format(rawAccel.first, rawAccel.second, rawAccel.third),
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Ring Motion Sensor",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -684,6 +704,176 @@ fun MetricCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+fun LiveMotionVisualizer(
+    magnitude: Float,
+    x: Float,
+    y: Float,
+    z: Float,
+    peak10s: Float
+) {
+    // Rolling buffer of the last 60 live magnitude samples for the seismograph
+    val history = remember { mutableStateListOf<Float>() }
+
+    LaunchedEffect(magnitude) {
+        history.add(magnitude)
+        if (history.size > 60) {
+            history.removeAt(0)
+        }
+    }
+
+    val motionColor = when {
+        magnitude < 0.05f -> StepsGreen
+        magnitude < 0.30f -> TempAmber
+        else -> HeartRateRed
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(motionColor)
+                )
+                Text(
+                    text = "Live Seismograph & Ring Orientation",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            Text(
+                text = "%.2f m/s²".format(magnitude),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = motionColor
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(100.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 1. Live Waveform / Seismograph Canvas
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.3f))
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 6.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    val maxScale = 2.0f // max 2.0 m/s^2 for full height
+
+                    // Draw grid lines
+                    val gridColor = Color.White.copy(alpha = 0.08f)
+                    drawLine(gridColor, Offset(0f, h * 0.25f), Offset(w, h * 0.25f), strokeWidth = 1f)
+                    drawLine(gridColor, Offset(0f, h * 0.50f), Offset(w, h * 0.50f), strokeWidth = 1f)
+                    drawLine(gridColor, Offset(0f, h * 0.75f), Offset(w, h * 0.75f), strokeWidth = 1f)
+
+                    if (history.size >= 2) {
+                        val stepX = w / 59f
+                        val path = Path()
+                        val fillPath = Path()
+
+                        val startIdx = (60 - history.size).coerceAtLeast(0)
+                        val startX = startIdx * stepX
+                        val startY = h - (history[0] / maxScale).coerceIn(0f, 1f) * h
+
+                        path.moveTo(startX, startY)
+                        fillPath.moveTo(startX, h)
+                        fillPath.lineTo(startX, startY)
+
+                        for (i in 1 until history.size) {
+                            val curX = (startIdx + i) * stepX
+                            val curY = h - (history[i] / maxScale).coerceIn(0f, 1f) * (h - 4f)
+                            path.lineTo(curX, curY)
+                            fillPath.lineTo(curX, curY)
+                        }
+
+                        fillPath.lineTo(w, h)
+                        fillPath.close()
+
+                        drawPath(
+                            path = fillPath,
+                            brush = Brush.verticalGradient(
+                                colors = listOf(motionColor.copy(alpha = 0.35f), motionColor.copy(alpha = 0.02f)),
+                                startY = 0f,
+                                endY = h
+                            )
+                        )
+
+                        drawPath(
+                            path = path,
+                            color = motionColor,
+                            style = Stroke(width = 2.5f, cap = StrokeCap.Round)
+                        )
+                    }
+                }
+            }
+
+            // 2. 3D Tilt Reticle & Motion Halo
+            Box(
+                modifier = Modifier
+                    .size(100.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cx = size.width / 2f
+                    val cy = size.height / 2f
+                    val r = size.minDimension / 2f - 8f
+
+                    // Outer Target Rings
+                    drawCircle(Color.White.copy(alpha = 0.12f), radius = r, center = Offset(cx, cy), style = Stroke(width = 1.5f))
+                    drawCircle(Color.White.copy(alpha = 0.06f), radius = r * 0.5f, center = Offset(cx, cy), style = Stroke(width = 1f))
+
+                    // Crosshairs
+                    drawLine(Color.White.copy(alpha = 0.15f), Offset(cx - r, cy), Offset(cx + r, cy), strokeWidth = 1f)
+                    drawLine(Color.White.copy(alpha = 0.15f), Offset(cx, cy - r), Offset(cx, cy + r), strokeWidth = 1f)
+
+                    // Dynamic Pulsating Motion Halo
+                    val haloRadius = (r * 0.3f + (magnitude / 2.0f) * r * 0.7f).coerceIn(r * 0.3f, r)
+                    drawCircle(
+                        color = motionColor.copy(alpha = 0.25f),
+                        radius = haloRadius,
+                        center = Offset(cx, cy)
+                    )
+
+                    // Tilt Bubble based on X, Y pitch/roll (-9.8 to +9.8 m/s^2 mapped to radius)
+                    val bubbleOffsetX = (x / 9.8f).coerceIn(-1f, 1f) * (r * 0.75f)
+                    val bubbleOffsetY = -(y / 9.8f).coerceIn(-1f, 1f) * (r * 0.75f)
+                    val bubbleCenter = Offset(cx + bubbleOffsetX, cy + bubbleOffsetY)
+
+                    // Draw Tilt Center Bubble
+                    drawCircle(motionColor, radius = 6.dp.toPx(), center = bubbleCenter)
+                    drawCircle(Color.White, radius = 2.5.dp.toPx(), center = bubbleCenter)
+                }
             }
         }
     }
