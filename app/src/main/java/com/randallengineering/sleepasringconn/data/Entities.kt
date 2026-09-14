@@ -56,5 +56,8 @@ data class SleepSessionEntity(
     val avgSpo2: Int?,
     val avgRespiratoryRate: Double?,
     val sleepScore: Int,
-    val isSyncedToHealthConnect: Boolean = false
+    val isSyncedToHealthConnect: Boolean = false,
+    val isNap: Boolean = false,
+    val isUserEdited: Boolean = false,
+    val sessionLabel: String = "Overnight Sleep"
 )

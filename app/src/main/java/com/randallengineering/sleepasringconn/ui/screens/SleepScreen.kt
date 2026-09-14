@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -38,8 +40,11 @@ import com.randallengineering.sleepasringconn.analytics.SleepStagingEngine
 import com.randallengineering.sleepasringconn.analytics.StagedEpoch
 import com.randallengineering.sleepasringconn.analytics.VitalExtreme
 import com.randallengineering.sleepasringconn.data.AppDatabase
+import com.randallengineering.sleepasringconn.data.SleepSessionManager
 import com.randallengineering.sleepasringconn.protocol.BulkRecord
 import com.randallengineering.sleepasringconn.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -52,15 +57,20 @@ fun SleepScreen() {
     var selectedSessionIndex by remember { mutableIntStateOf(0) }
     var selectedViewMode by remember { mutableIntStateOf(0) } // 0 = Session, 1 = Trends
 
+    var showEditDialog by remember { mutableStateOf(false) }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var sessionToEdit by remember { mutableStateOf<SleepSession?>(null) }
+    var refreshKey by remember { mutableIntStateOf(0) }
+
     val now = remember { System.currentTimeMillis() }
     val past30d = remember { now - 30 * 24 * 60 * 60 * 1000L }
     val epochEntities by database.epochDao().getEpochsSinceFlow(past30d).collectAsState(initial = emptyList())
 
-    val allSessions = remember(epochEntities) {
-        if (epochEntities.isEmpty()) emptyList()
-        else {
-            val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-            SleepStagingEngine.extractAllSleepSessions(bulkRecords)
+    var allSessions by remember { mutableStateOf<List<SleepSession>>(emptyList()) }
+
+    LaunchedEffect(epochEntities, refreshKey) {
+        withContext(Dispatchers.Default) {
+            allSessions = SleepSessionManager.getProcessedSessions(context, epochEntities)
         }
     }
 
@@ -141,6 +151,11 @@ fun SleepScreen() {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        FilledTonalButton(onClick = { showAddDialog = true }) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Add Sleep / Nap Manually")
+                        }
                     }
                 }
             }
@@ -149,6 +164,30 @@ fun SleepScreen() {
             // VIEW 0: SESSION DEEP DIVE
             // ==========================================
             val session = sleepSession ?: allSessions.first()
+
+            // Session List Header with + Add Nap/Sleep button
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Sleep Sessions & Naps (${allSessions.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    TextButton(
+                        onClick = { showAddDialog = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add Session", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
 
             // Night & Nap / Date Selector Chips
             item {
@@ -167,8 +206,9 @@ fun SleepScreen() {
                                 val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(sess.startTimeMillis))
                                 "$timeStr (${sess.sessionLabel})"
                             }
-                            idx == 0 -> "Last Night (${SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(sess.startTimeMillis))})"
-                            else -> SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(Date(sess.startTimeMillis))
+                            else -> {
+                                SimpleDateFormat("EEE, MMM d (h:mm a)", Locale.getDefault()).format(Date(sess.startTimeMillis))
+                            }
                         }
 
                         val chipTint = if (sess.isNap) Color(0xFFFFA000) else SleepPurple
@@ -181,7 +221,18 @@ fun SleepScreen() {
                             },
                             label = {
                                 Column(modifier = Modifier.padding(vertical = 2.dp)) {
-                                    Text(dateStr, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(dateStr, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                        if (sess.isUserEdited) {
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                "• Edited",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
                                     Text(
                                         "$durText • Score ${sess.sleepScore}",
                                         style = MaterialTheme.typography.labelSmall,
@@ -279,26 +330,67 @@ fun SleepScreen() {
                                     .padding(start = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = (if (session.isNap) Color(0xFFFFA000) else SleepPurple).copy(alpha = 0.15f)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = (if (session.isNap) Color(0xFFFFA000) else SleepPurple).copy(alpha = 0.15f)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (session.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
+                                                    contentDescription = null,
+                                                    tint = if (session.isNap) Color(0xFFFFA000) else SleepPurple,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = session.sessionLabel.uppercase(),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
+                                                )
+                                            }
+                                        }
+
+                                        if (session.isUserEdited) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer
+                                            ) {
+                                                Text(
+                                                    text = "EDITED",
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            sessionToEdit = session
+                                            showEditDialog = true
+                                        },
+                                        modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(
-                                            imageVector = if (session.isNap) Icons.Default.WbSunny else Icons.Default.Bedtime,
-                                            contentDescription = null,
-                                            tint = if (session.isNap) Color(0xFFFFA000) else SleepPurple,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = if (session.isNap) session.sessionLabel.uppercase() else "OVERNIGHT SLEEP SESSION",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (session.isNap) Color(0xFFFFA000) else SleepPurple
+                                            Icons.Default.Edit,
+                                            contentDescription = "Edit Sleep Times",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }
@@ -333,12 +425,29 @@ fun SleepScreen() {
 
             // 2. Exact Timings & Architecture Metrics Grid
             item {
-                Text(
-                    text = "Sleep Architecture & Timings",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Sleep Architecture & Timings",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            sessionToEdit = session
+                            showEditDialog = true
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Edit Times", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
 
             item {
@@ -1025,6 +1134,61 @@ fun SleepScreen() {
             }
         }
     }
+
+    if (showEditDialog && sessionToEdit != null) {
+        val sess = sessionToEdit!!
+        EditSleepSessionDialog(
+            session = sess,
+            onDismiss = {
+                showEditDialog = false
+                sessionToEdit = null
+            },
+            onSave = { newStart, newEnd, isNap ->
+                SleepSessionManager.saveSessionEdit(
+                    context = context,
+                    originalStart = sess.originalStartTimeMillis,
+                    newStart = newStart,
+                    newEnd = newEnd,
+                    isNap = isNap
+                )
+                showEditDialog = false
+                sessionToEdit = null
+                refreshKey++
+            },
+            onReset = {
+                SleepSessionManager.resetSessionEdit(context, sess.originalStartTimeMillis)
+                showEditDialog = false
+                sessionToEdit = null
+                refreshKey++
+            },
+            onDelete = {
+                SleepSessionManager.deleteSession(context, sess.originalStartTimeMillis)
+                showEditDialog = false
+                sessionToEdit = null
+                if (selectedSessionIndex >= allSessions.size - 1) {
+                    selectedSessionIndex = maxOf(0, allSessions.size - 2)
+                }
+                refreshKey++
+            }
+        )
+    }
+
+    if (showAddDialog) {
+        AddSleepSessionDialog(
+            onDismiss = { showAddDialog = false },
+            onSave = { newStart, newEnd, isNap ->
+                SleepSessionManager.addManualSession(
+                    context = context,
+                    startTime = newStart,
+                    endTime = newEnd,
+                    isNap = isNap
+                )
+                showAddDialog = false
+                selectedSessionIndex = 0
+                refreshKey++
+            }
+        )
+    }
 }
 
 @Composable
@@ -1520,6 +1684,395 @@ fun StageBadge(label: String, time: String, color: Color) {
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(color))
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(time, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun EditSleepSessionDialog(
+    session: SleepSession,
+    onDismiss: () -> Unit,
+    onSave: (newStart: Long, newEnd: Long, isNap: Boolean) -> Unit,
+    onReset: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var startMillis by remember { mutableLongStateOf(session.startTimeMillis) }
+    var endMillis by remember { mutableLongStateOf(session.endTimeMillis) }
+    var isNap by remember { mutableStateOf(session.isNap) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    val durMinutes = maxOf(0, ((endMillis - startMillis) / 60_000L).toInt())
+    val durHours = durMinutes / 60
+    val durMinsRem = durMinutes % 60
+    val durText = if (durHours > 0) "${durHours}h ${durMinsRem}m" else "${durMinsRem}m"
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Session?") },
+            text = { Text("Are you sure you want to remove this sleep session? It will no longer appear in your sleep or nap history.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDelete()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Edit Sleep Times",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close")
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Session Type Selector: Nap vs Overnight
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Session Category",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        SegmentedButton(
+                            selected = !isNap,
+                            onClick = { isNap = false },
+                            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                            icon = {
+                                Icon(
+                                    Icons.Default.Bedtime,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(SegmentedButtonDefaults.IconSize)
+                                )
+                            }
+                        ) {
+                            Text("Overnight")
+                        }
+                        SegmentedButton(
+                            selected = isNap,
+                            onClick = { isNap = true },
+                            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                            icon = {
+                                Icon(
+                                    Icons.Default.WbSunny,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(SegmentedButtonDefaults.IconSize)
+                                )
+                            }
+                        ) {
+                            Text("Nap")
+                        }
+                    }
+                }
+
+                // Window duration summary preview
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = (if (isNap) Color(0xFFFFA000) else SleepPurple).copy(alpha = 0.12f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                "Total Sleep Window",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(durText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        }
+                        if (endMillis <= startMillis) {
+                            Text(
+                                "⚠️ End must be after start",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+
+                // Start Time Section
+                TimeAdjustSection(
+                    label = "Sleep Start (Bedtime / Onset)",
+                    timestampMillis = startMillis,
+                    onAdjust = { deltaMin ->
+                        startMillis += deltaMin * 60_000L
+                    },
+                    onPickTime = { hour, minute ->
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = startMillis
+                            set(Calendar.HOUR_OF_DAY, hour)
+                            set(Calendar.MINUTE, minute)
+                        }
+                        startMillis = cal.timeInMillis
+                    },
+                    onPickDate = { year, month, day ->
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = startMillis
+                            set(Calendar.YEAR, year)
+                            set(Calendar.MONTH, month)
+                            set(Calendar.DAY_OF_MONTH, day)
+                        }
+                        startMillis = cal.timeInMillis
+                    },
+                    accentColor = if (isNap) Color(0xFFFFA000) else SleepPurple
+                )
+
+                // End Time Section
+                TimeAdjustSection(
+                    label = "Sleep End (Wake-up Time)",
+                    timestampMillis = endMillis,
+                    onAdjust = { deltaMin ->
+                        endMillis += deltaMin * 60_000L
+                    },
+                    onPickTime = { hour, minute ->
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = endMillis
+                            set(Calendar.HOUR_OF_DAY, hour)
+                            set(Calendar.MINUTE, minute)
+                        }
+                        endMillis = cal.timeInMillis
+                    },
+                    onPickDate = { year, month, day ->
+                        val cal = Calendar.getInstance().apply {
+                            timeInMillis = endMillis
+                            set(Calendar.YEAR, year)
+                            set(Calendar.MONTH, month)
+                            set(Calendar.DAY_OF_MONTH, day)
+                        }
+                        endMillis = cal.timeInMillis
+                    },
+                    accentColor = AwakeSleepOrange
+                )
+
+                // Action buttons: Reset Auto / Delete
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (session.isUserEdited) {
+                        TextButton(
+                            onClick = onReset,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reset Auto")
+                        }
+                    } else {
+                        Spacer(Modifier.width(1.dp))
+                    }
+
+                    TextButton(
+                        onClick = { showDeleteConfirm = true },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Delete")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (endMillis > startMillis) {
+                        onSave(startMillis, endMillis, isNap)
+                    }
+                },
+                enabled = endMillis > startMillis
+            ) {
+                Text("Save Changes")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun AddSleepSessionDialog(
+    onDismiss: () -> Unit,
+    onSave: (startTime: Long, endTime: Long, isNap: Boolean) -> Unit
+) {
+    val now = remember { System.currentTimeMillis() }
+    val oneHourAgo = remember { now - 60 * 60 * 1000L }
+
+    val syntheticSession = remember {
+        SleepSession(
+            startTimeMillis = oneHourAgo,
+            endTimeMillis = now,
+            totalInBedMinutes = 60,
+            sleepDurationMinutes = 55,
+            awakeMinutes = 5,
+            lightMinutes = 35,
+            deepMinutes = 10,
+            remMinutes = 10,
+            averageHeartRate = null,
+            averageHrvRmssd = null,
+            averageSpo2 = null,
+            averageRespiratoryRate = null,
+            sleepScore = 80,
+            epochs = emptyList(),
+            isNap = true,
+            sessionLabel = "Daytime Nap",
+            isUserEdited = false
+        )
+    }
+
+    EditSleepSessionDialog(
+        session = syntheticSession,
+        onDismiss = onDismiss,
+        onSave = onSave,
+        onReset = onDismiss,
+        onDelete = onDismiss
+    )
+}
+
+@Composable
+private fun TimeAdjustSection(
+    label: String,
+    timestampMillis: Long,
+    onAdjust: (Int) -> Unit,
+    onPickTime: (Int, Int) -> Unit,
+    onPickDate: (Int, Int, Int) -> Unit,
+    accentColor: Color
+) {
+    val context = LocalContext.current
+    val timeFmt = remember { SimpleDateFormat("h:mm a", Locale.getDefault()) }
+    val dateFmt = remember { SimpleDateFormat("EEE, MMM d", Locale.getDefault()) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = timeFmt.format(Date(timestampMillis)),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = accentColor
+                        )
+                        Text(
+                            text = dateFmt.format(Date(timestampMillis)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                val cal = Calendar.getInstance().apply { timeInMillis = timestampMillis }
+                                android.app.TimePickerDialog(
+                                    context,
+                                    { _, h, m -> onPickTime(h, m) },
+                                    cal.get(Calendar.HOUR_OF_DAY),
+                                    cal.get(Calendar.MINUTE),
+                                    android.text.format.DateFormat.is24HourFormat(context)
+                                ).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.AccessTime, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Time", style = MaterialTheme.typography.labelSmall)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val cal = Calendar.getInstance().apply { timeInMillis = timestampMillis }
+                                android.app.DatePickerDialog(
+                                    context,
+                                    { _, y, m, d -> onPickDate(y, m, d) },
+                                    cal.get(Calendar.YEAR),
+                                    cal.get(Calendar.MONTH),
+                                    cal.get(Calendar.DAY_OF_MONTH)
+                                ).show()
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.CalendarToday, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Date", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+
+                // Quick Nudge Buttons: -30m, -15m, +15m, +30m
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(-30, -15, 15, 30).forEach { delta ->
+                        FilledTonalButton(
+                            onClick = { onAdjust(delta) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = if (delta > 0) "+${delta}m" else "${delta}m",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

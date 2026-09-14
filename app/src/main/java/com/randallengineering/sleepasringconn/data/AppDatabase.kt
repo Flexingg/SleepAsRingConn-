@@ -63,6 +63,9 @@ interface SleepSessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(session: SleepSessionEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(sessions: List<SleepSessionEntity>)
+
     @Query("SELECT * FROM sleep_sessions ORDER BY startTimeMillis DESC")
     fun getAllSessions(): Flow<List<SleepSessionEntity>>
 
@@ -74,11 +77,17 @@ interface SleepSessionDao {
 
     @Query("UPDATE sleep_sessions SET isSyncedToHealthConnect = 1 WHERE startTimeMillis = :startTime")
     suspend fun markSynced(startTime: Long)
+
+    @Query("DELETE FROM sleep_sessions WHERE startTimeMillis = :startTime")
+    suspend fun deleteByStartTime(startTime: Long)
+
+    @Query("DELETE FROM sleep_sessions")
+    suspend fun deleteAll()
 }
 
 @Database(
     entities = [EpochEntity::class, DeviceStatusEntity::class, SleepSessionEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -90,13 +99,24 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sleep_sessions ADD COLUMN isNap INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE sleep_sessions ADD COLUMN isUserEdited INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE sleep_sessions ADD COLUMN sessionLabel TEXT NOT NULL DEFAULT 'Overnight Sleep'")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "sleep_as_ringconn.db"
-                ).build()
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }
