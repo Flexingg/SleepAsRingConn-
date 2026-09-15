@@ -78,6 +78,7 @@ object BleConnectionManager {
     private var lastMovementFlushTime = System.currentTimeMillis()
 
     private val PREF_KEY_MAC = "paired_ring_mac"
+    private var lastReportedRingSteps: Int? = null
 
     init {
         startCommandQueueWorker()
@@ -409,6 +410,23 @@ object BleConnectionManager {
                 val status = DeviceStatus.parse(packet)
                 if (status != null) {
                     _latestDeviceStatus.value = status
+
+                    // Report genuine physical motion detected by ring onboard IMU / pedometer
+                    val prevSteps = lastReportedRingSteps
+                    lastReportedRingSteps = status.quarterHourSteps
+                    appContext?.let { ctx ->
+                        val motionMgr = com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
+                        if (status.isOnCharger) {
+                            motionMgr.reportRingMotion(0.0f, "Ring On Charger")
+                        } else if (prevSteps != null && status.quarterHourSteps > prevSteps) {
+                            val stepDelta = status.quarterHourSteps - prevSteps
+                            val stepMotionMps2 = (0.25f + stepDelta * 0.15f).coerceIn(0.25f, 3.0f)
+                            motionMgr.reportRingMotion(stepMotionMps2, "Ring Pedometer ($stepDelta steps)")
+                        } else if (status.isSportMode) {
+                            motionMgr.reportRingMotion(0.35f, "Ring Sport Active")
+                        }
+                    }
+
                     coroutineScope.launch {
                         appContext?.let { ctx ->
                             val db = AppDatabase.getDatabase(ctx)
@@ -480,11 +498,17 @@ object BleConnectionManager {
                         }
                     }
 
-                    val recentMotion = records.lastOrNull()?.motionMagnitude ?: 0
-                    if (recentMotion > 1) {
-                        val motionMps2 = (recentMotion * 0.25f).coerceIn(0.2f, 2.0f)
+                    // Feed genuine ring actigraphy counts (5 x 30s bins) from ring onboard IMU
+                    val latestRecord = records.lastOrNull()
+                    if (latestRecord != null) {
+                        val subMotions = latestRecord.subEpochMotions
+                        val mps2List = subMotions.map { count ->
+                            if (count == 0) 0.0f
+                            else (0.06f + count * 0.02f).coerceIn(0.06f, 3.5f)
+                        }
                         appContext?.let { ctx ->
-                            com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx).reportRingMotion(motionMps2)
+                            com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
+                                .reportRingBatchMotions(mps2List, "Ring Actigraphy (0x4C)")
                         }
                     }
 
@@ -535,6 +559,11 @@ object BleConnectionManager {
                                 SleepAsAndroidBridge.sendHeartRateData(ctx, floatArrayOf(hr.toFloat()))
                                 SleepAsAndroidBridge.sendExtraSensorData(ctx, hr = hr.toFloat())
                             }
+                        }
+                        // During active continuous live stream, report slight living baseline motion from ring
+                        appContext?.let { ctx ->
+                            com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
+                                .reportRingMotion(0.12f, "Ring Live Stream (0x4E)")
                         }
                     }
                 }

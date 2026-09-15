@@ -63,6 +63,7 @@ fun DashboardScreen(
     val rawAccel by motionSensorManager.rawAcceleration.collectAsState()
     val currentMagnitude by motionSensorManager.currentMagnitude.collectAsState()
     val last10sMaxAccel by motionSensorManager.last10sMaxAcceleration.collectAsState()
+    val lastDataSource by motionSensorManager.lastDataSource.collectAsState()
 
     DisposableEffect(Unit) {
         motionSensorManager.start()
@@ -512,12 +513,12 @@ fun DashboardScreen(
                             }
                             Column {
                                 Text(
-                                    text = "3-Axis Ring Accelerometer",
+                                    text = "Ring Motion & Actigraphy",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    text = "X: %.2f · Y: %.2f · Z: %.2f m/s²".format(rawAccel.first, rawAccel.second, rawAccel.third),
+                                    text = "$lastDataSource · Zero Phone Sensors",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -554,7 +555,7 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.surface
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text("Live Δa", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Live Ring Δa", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("%.2f m/s²".format(currentMagnitude), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             }
                         }
@@ -565,7 +566,7 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.surface
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text("10s Peak (SaA)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("10s Ring Peak (SaA)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("%.2f m/s²".format(last10sMaxAccel), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             }
                         }
@@ -966,7 +967,7 @@ fun LiveMotionVisualizer(
                         .background(motionColor)
                 )
                 Text(
-                    text = "Live Seismograph & Ring Orientation",
+                    text = "Live Ring Motion & Actigraphy Seismograph",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface

@@ -42,14 +42,33 @@ data class BulkRecord(
 ) {
     val timestampMillis: Long = timestampEpochSeconds * 1000L
 
+    /**
+     * Sub-epoch motion values (5 x 30s bins across the 150s epoch) from ring onboard IMU.
+     * Bytes 0..4 in activityCounts: baseline level (rest = ~18 / 0x12)
+     * Bytes 5..9 in activityCounts: active motion pulse counts
+     */
+    val subEpochMotions: List<Int>
+        get() {
+            if (activityCounts.isEmpty()) return emptyList()
+            if (activityCounts.size >= 10) {
+                return (0 until 5).map { i ->
+                    val base = activityCounts[i].toInt() and 0xFF
+                    val pulse = activityCounts[5 + i].toInt() and 0xFF
+                    val baseDelta = if (base > 18) base - 18 else 0
+                    baseDelta + pulse
+                }
+            }
+            // Fallback for short mock arrays in unit tests
+            return activityCounts.map { it.toInt() and 0xFF }
+        }
+
     val motionMagnitude: Int
         get() {
             if (activityCounts.isEmpty()) return 0
-            val sub = activityCounts.take(5).map { it.toInt() and 0xFF }
-            val minVal = sub.minOrNull() ?: 0
-            val maxVal = sub.maxOrNull() ?: 0
-            return maxVal - minVal
+            val motions = subEpochMotions
+            return motions.maxOrNull() ?: 0
         }
+
 
     companion object {
         const val RECORD_LENGTH = 23

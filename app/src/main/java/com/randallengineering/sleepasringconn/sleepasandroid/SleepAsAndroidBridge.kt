@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.PowerManager
 import android.util.Log
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
+import com.randallengineering.sleepasringconn.protocol.RingProtocol
 import com.randallengineering.sleepasringconn.sensor.MotionSensorManager
 import kotlinx.coroutines.*
 
@@ -132,6 +133,10 @@ object SleepAsAndroidBridge {
                         timestampMillis = System.currentTimeMillis()
                     )
                 }
+
+                // Poll ring descriptor status (steps & wear state) and fetch new actigraphy epochs
+                BleConnectionManager.sendCommand(RingProtocol.CMD_STATUS_QUERY)
+                BleConnectionManager.sendCommand(RingProtocol.CMD_FETCH)
 
                 // If live monitoring paused or ring idled out, re-assert live monitoring
                 if (!BleConnectionManager.isLiveMonitoring.value) {

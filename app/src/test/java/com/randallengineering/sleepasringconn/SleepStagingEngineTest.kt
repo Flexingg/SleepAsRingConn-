@@ -309,4 +309,60 @@ class SleepStagingEngineTest {
         assertFalse(session.isNap)
         assertTrue("Duration should reflect both sleep periods (~7h)", session.sleepDurationMinutes in 390..450)
     }
+
+    @Test
+    fun testRingOnboardActigraphyDecoding() {
+        // Complete stillness / deep sleep (raw bytes: 5 x baseline 18, 5 x 0 pulses)
+        val stillActivityBytes = byteArrayOf(18, 18, 18, 18, 18, 0, 0, 0, 0, 0)
+        val stillRecord = BulkRecord(
+            raw = ByteArray(23),
+            counter = 1000L,
+            timestampEpochSeconds = 1000L,
+            layout = BulkRecordLayout.SLEEP_VITALS,
+            heartRate = 55,
+            hrvRmssd = 50,
+            confidence = 9,
+            respiratoryRate = 14.0,
+            spo2Percent = 98,
+            activityCounts = stillActivityBytes
+        )
+        assertEquals(0, stillRecord.motionMagnitude)
+        assertEquals(listOf(0, 0, 0, 0, 0), stillRecord.subEpochMotions)
+
+        // Sleep movement in bed: baseline is still 18, but sub-epoch 4 and 5 had motion pulses
+        val sleepMoveBytes = byteArrayOf(18, 18, 18, 18, 18, 0, 0, 0, 2, 160.toByte())
+        val moveRecord = BulkRecord(
+            raw = ByteArray(23),
+            counter = 1001L,
+            timestampEpochSeconds = 1001L,
+            layout = BulkRecordLayout.SLEEP_VITALS,
+            heartRate = 60,
+            hrvRmssd = 40,
+            confidence = 8,
+            respiratoryRate = 15.0,
+            spo2Percent = 97,
+            activityCounts = sleepMoveBytes
+        )
+        assertEquals(160, moveRecord.motionMagnitude)
+        assertEquals(listOf(0, 0, 0, 2, 160), moveRecord.subEpochMotions)
+
+        // Daytime active running: elevated baseline and high pulses
+        val runningBytes = byteArrayOf(24, 24, 19, 18, 18, 71, 100, 180.toByte(), 21, 0)
+        val runningRecord = BulkRecord(
+            raw = ByteArray(23),
+            counter = 1002L,
+            timestampEpochSeconds = 1002L,
+            layout = BulkRecordLayout.ACTIVITY,
+            heartRate = 115,
+            hrvRmssd = 25,
+            confidence = 7,
+            respiratoryRate = 22.0,
+            spo2Percent = null,
+            activityCounts = runningBytes
+        )
+        // subEpochMotions: [24-18+71=77, 24-18+100=106, 19-18+180=181, 0+21=21, 0]
+        assertEquals(181, runningRecord.motionMagnitude)
+        assertEquals(listOf(77, 106, 181, 21, 0), runningRecord.subEpochMotions)
+    }
 }
+
