@@ -585,59 +585,32 @@ object BleConnectionManager {
             }
 
             0x4D -> {
-                // Sport history page (ACK only)
+                // Sport history page (ACK with CD 00 00)
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4D)
+                val records = SportRecord.parse4D(packet)
+                log("RX 0x4D sport batch page with ${records.size} records")
+                records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
+                    updateLiveHeartRate(hr)
+                }
             }
 
             0x4E -> {
                 // Sport / Continuous Live Stream frame (ACK with CE 00 00)
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4E)
                 log("RX 0x4E frame (${packet.size} bytes): $hex")
-                var hrUpdated = false
-                if (packet.size >= 27) {
-                    val records = BulkRecord.parsePage(packet)
-                    records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
+                val record = SportRecord.parse4E(packet)
+                if (record != null) {
+                    record.heartRate?.let { hr ->
                         updateLiveHeartRate(hr)
-                        hrUpdated = true
-                        log("Live HR (0x4E record): $hr BPM")
+                        log("Live HR (0x4E sport): $hr BPM")
                     }
-                    records.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
-                        _liveSpo2.value = spo2
-                        log("Live SpO2 (0x4E record): $spo2 %")
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
-                            }
+                    if (record.steps > 0) {
+                        appContext?.let { ctx ->
+                            val motionMps2 = (0.05f + record.steps * 0.1f).coerceIn(0.05f, 3.0f)
+                            com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
+                                .reportRingMotion(motionMps2, "Ring Sport (0x4E: ${record.steps} steps)")
                         }
                     }
-                    records.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
-                        _liveHrv.value = hrv
-                        log("Live HRV (0x4E record): $hrv ms")
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, sdnnHrv = hrv.toFloat())
-                            }
-                        }
-                    }
-                }
-                
-                // Fallback / direct frame: inspect candidate bytes
-                if (!hrUpdated && packet.size >= 3) {
-                    val candidate = when {
-                        (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
-                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
-                        packet.size >= 5 && (packet[4].toInt() and 0xFF) in 30..220 && (packet[4].toInt() and 0xFF) != 0x9F -> packet[4].toInt() and 0xFF
-                        else -> null
-                    }
-                    if (candidate != null) {
-                        updateLiveHeartRate(candidate)
-                        log("Live HR (0x4E direct): $candidate BPM")
-                    }
-                }
-                // During active continuous live stream, report slight living baseline motion from ring
-                appContext?.let { ctx ->
-                    com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
-                        .reportRingMotion(0.12f, "Ring Live Stream (0x4E)")
                 }
             }
 
@@ -649,48 +622,22 @@ object BleConnectionManager {
             0x15 -> {
                 // Live sample response
                 log("RX 0x15 frame (${packet.size} bytes): $hex")
-                if (packet.size >= 3 && packet[1] == 0x00.toByte()) {
-                    val b2 = packet[2].toInt() and 0xFF
-                    val candidateHr = if (b2 in 30..220 && b2 != 0x9F) {
-                        b2
-                    } else {
-                        when {
-                            packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
-                            packet.size >= 5 && (packet[4].toInt() and 0xFF) in 30..220 && (packet[4].toInt() and 0xFF) != 0x9F -> packet[4].toInt() and 0xFF
-                            packet.size >= 15 && (packet[14].toInt() and 0xFF) in 30..220 && (packet[14].toInt() and 0xFF) != 0x9F -> packet[14].toInt() and 0xFF
-                            else -> null
-                        }
-                    }
-                    if (candidateHr != null) {
-                        updateLiveHeartRate(candidateHr)
-                        log("Live HR (0x15): $candidateHr BPM")
-                    }
-                } else if (packet.size >= 3 && (packet[1] == 0x01.toByte() || packet[1] == 0x02.toByte())) {
-                    val candidateSpo2 = when {
-                        packet.size >= 15 && (packet[14].toInt() and 0xFF) in 70..100 -> packet[14].toInt() and 0xFF
-                        (packet[2].toInt() and 0xFF) in 70..100 -> packet[2].toInt() and 0xFF
-                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 70..100 -> packet[3].toInt() and 0xFF
-                        else -> null
-                    }
-                    if (candidateSpo2 != null) {
-                        _liveSpo2.value = candidateSpo2
-                        log("Live SpO2 (0x15): $candidateSpo2 %")
+                val hr = LiveSample.parseHeartRate(packet)
+                if (hr != null) {
+                    updateLiveHeartRate(hr)
+                    log("Live HR (0x15): $hr BPM")
+                } else if (LiveSample.isWarmup(packet)) {
+                    log("Live HR (0x15): optical warm-up (${packet[2].toInt() and 0xFF}) - awaiting PPG lock")
+                }
 
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = candidateSpo2.toFloat())
-                            }
+                val spo2 = LiveSample.parseSpo2(packet)
+                if (spo2 != null) {
+                    _liveSpo2.value = spo2
+                    log("Live SpO2 (0x15): $spo2 %")
+                    if (SleepAsAndroidBridge.isTrackingActive) {
+                        appContext?.let { ctx ->
+                            SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
                         }
-                    }
-                } else if (packet.size >= 3) {
-                    val candidate = when {
-                        (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
-                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
-                        else -> null
-                    }
-                    if (candidate != null) {
-                        updateLiveHeartRate(candidate)
-                        log("Live HR (0x15 fallback): $candidate BPM")
                     }
                 }
             }
@@ -778,31 +725,33 @@ object BleConnectionManager {
 
     fun startLiveMonitoring(hrMode: Boolean = true) {
         _isLiveMonitoring.value = true
+        if (_isSyncing.value) {
+            log("History sync currently active. Live monitoring will start as soon as sync completes.")
+            return
+        }
+
         livePollJob?.cancel()
 
         coroutineScope.launch {
-            log("Starting live continuous measurement mode (${if (hrMode) "HR Workout Stream" else "SpO2"})...")
-            sendCommand(RingProtocol.CMD_STATUS_QUERY)
-            delay(100)
+            log("Starting live measurement mode (${if (hrMode) "HR Green LEDs" else "SpO2 Red LEDs"})...")
+            sendCommand(RingProtocol.CMD_STATUS_QUERY) // D0 00 00 - exits bulk mode
+            delay(250)
             if (hrMode) {
-                sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
-                delay(100)
-                sendCommand(RingProtocol.CMD_SPORT_START)
+                sendCommand(RingProtocol.CMD_LIVE_HR_MODE) // 06 01 00 - green LEDs
             } else {
-                sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
+                sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE) // 06 02 00 - red LEDs
             }
-            delay(100)
-            sendCommand(RingProtocol.CMD_FETCH)
-            delay(100)
-            sendCommand(RingProtocol.CMD_POLL)
+            delay(250)
+            sendCommand(RingProtocol.CMD_FETCH) // 07 00 00
+            delay(2000) // Wait 2s for optical sensor window to stabilize before polling
 
-            // High-frequency maintainer loop: queries samples every 1s and re-primes sport mode
+            // Poll at the ring's proven cadence: 2.0s per sample
             var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
-                    delay(1000)
+                    sendCommand(RingProtocol.CMD_POLL) // 95 00 00 -> yields 0x15
+                    delay(2000)
                     tick++
-                    sendCommand(RingProtocol.CMD_POLL)
 
                     // Staleness check: if no valid HR reading received in past 60 seconds, reset live HR to null
                     if (lastLiveHrTimestamp > 0L && System.currentTimeMillis() - lastLiveHrTimestamp > 60_000L) {
@@ -812,26 +761,9 @@ object BleConnectionManager {
                         }
                     }
 
-                    if (hrMode) {
-                        if (tick % 10 == 0) {
-                            // Maintain sport stream continuous flow
-                            sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
-                            delay(50)
-                            sendCommand(RingProtocol.CMD_SPORT_START)
-                            delay(50)
-                            sendCommand(RingProtocol.CMD_FETCH)
-                        } else if (tick % 30 == 0) {
-                            // Status query for temp, steps, battery
-                            sendCommand(RingProtocol.CMD_STATUS_QUERY)
-                        }
-                    } else {
-                        if (tick % 15 == 0) {
-                            sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
-                            delay(50)
-                            sendCommand(RingProtocol.CMD_FETCH)
-                        } else if (tick % 30 == 0) {
-                            sendCommand(RingProtocol.CMD_STATUS_QUERY)
-                        }
+                    // Every 30s (15 ticks): send CMD_FETCH to update skin temp, battery, steps without resetting HR
+                    if (tick % 15 == 0) {
+                        sendCommand(RingProtocol.CMD_FETCH)
                     }
                 }
             }

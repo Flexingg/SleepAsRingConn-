@@ -142,4 +142,64 @@ class ProtocolTest {
         assertEquals(50, record.hrvRmssd)
         assertEquals(97, record.spo2Percent)
     }
+
+    @Test
+    fun testSportRecord4E_decodesHeartRateAtByte5_notTimestamp() {
+        // Wire format of 0x4E (13 bytes):
+        // [0] = 0x4E
+        // [1:5] = cursor: 0x0C 0x22 0x98 0x88 (136 decimal in low byte!)
+        // [5] = HR: 74 bpm (0x4A)
+        // [6] = steps: 5
+        // [7:12] = misc/conf
+        // [12] = XOR checksum
+        val body = byteArrayOf(
+            0x4E,
+            0x0C, 0x22, 0x98.toByte(), 136.toByte(), // cursor has 136 in byte[4]
+            74.toByte(), // genuine HR is byte[5]!
+            5.toByte(),  // steps is byte[6]
+            0x00, 0x10, 0x27, 0x03, 0x00
+        )
+        val xor = RingProtocol.computeXorTrailer(body)
+        val frame = body + xor
+
+        val parsed = SportRecord.parse4E(frame)
+        assertNotNull(parsed)
+        assertEquals(74, parsed!!.heartRate) // Must be 74 bpm, NEVER 136 bpm!
+        assertEquals(5, parsed.steps)
+    }
+
+    @Test
+    fun testLiveSample15_decodesHeartRate() {
+        // [15] [00] [5b = 91 bpm] [0a] [b0] [xor = f4]
+        val frame = byteArrayOf(
+            0x15, 0x00, 0x5B, 0x0A, 0xB0.toByte(), 0xF4.toByte()
+        )
+        val hr = LiveSample.parseHeartRate(frame)
+        assertEquals(91, hr)
+        assertFalse(LiveSample.isWarmup(frame))
+    }
+
+    @Test
+    fun testLiveSample15_warmupSentinel_filtered() {
+        // [15] [00] [08 = warmup sentinel] [0a] [b0] [xor]
+        val body = byteArrayOf(0x15, 0x00, 0x08, 0x0A, 0xB0.toByte())
+        val xor = RingProtocol.computeXorTrailer(body)
+        val frame = body + xor
+
+        val hr = LiveSample.parseHeartRate(frame)
+        assertNull(hr) // Must be null, filtered
+        assertTrue(LiveSample.isWarmup(frame))
+    }
+
+    @Test
+    fun testLiveSample15_decodesSpo2() {
+        // Long frame with [1] = 0x01, and [14] = 98%
+        val bytes = ByteArray(16)
+        bytes[0] = 0x15
+        bytes[1] = 0x01
+        bytes[14] = 98.toByte()
+
+        val spo2 = LiveSample.parseSpo2(bytes)
+        assertEquals(98, spo2)
+    }
 }

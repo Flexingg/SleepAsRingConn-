@@ -77,7 +77,7 @@ data class BulkRecord(
         fun parsePage(page: ByteArray): List<BulkRecord> {
             if (page.size < 4) return emptyList()
             val op = page[0].toInt() and 0xFF
-            if (op != 0x4C && op != 0x4E) return emptyList()
+            if (op != 0x4C) return emptyList()
             if (!RingProtocol.isFrameValid(page)) return emptyList()
 
             val recordsData = page.sliceArray(3 until page.size - 1)
