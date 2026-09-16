@@ -76,7 +76,8 @@ data class BulkRecord(
 
         fun parsePage(page: ByteArray): List<BulkRecord> {
             if (page.size < 4) return emptyList()
-            if ((page[0].toInt() and 0xFF) != 0x4C) return emptyList()
+            val op = page[0].toInt() and 0xFF
+            if (op != 0x4C && op != 0x4E) return emptyList()
             if (!RingProtocol.isFrameValid(page)) return emptyList()
 
             val recordsData = page.sliceArray(3 until page.size - 1)
@@ -117,16 +118,16 @@ data class BulkRecord(
                 else -> BulkRecordLayout.SLEEP_VITALS
             }
 
+            // Confidence: byte[6]
+            val conf = raw[6].toInt() and 0xFF
+
             // Heart rate: byte[4]
             val rawHr = raw[4].toInt() and 0xFF
-            val hr = if (!isIdle && rawHr in 30..220) rawHr else null
+            val hr = if (!isIdle && conf > 0 && rawHr in 30..220 && rawHr != 0x9F) rawHr else null
 
             // HRV: byte[5]
             val rawHrv = raw[5].toInt() and 0xFF
-            val hrv = if (!isIdle && rawHrv in 1..250) rawHrv else null
-
-            // Confidence: byte[6]
-            val conf = raw[6].toInt() and 0xFF
+            val hrv = if (!isIdle && conf > 0 && rawHrv in 1..250) rawHrv else null
 
             // Respiratory rate: byte[7] / 8.0
             val rawRr = raw[7].toInt() and 0xFF
