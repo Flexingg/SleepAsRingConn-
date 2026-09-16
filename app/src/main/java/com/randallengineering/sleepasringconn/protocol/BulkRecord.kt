@@ -123,11 +123,11 @@ data class BulkRecord(
 
             // Heart rate: byte[4]
             val rawHr = raw[4].toInt() and 0xFF
-            val hr = if (!isIdle && conf > 0 && rawHr in 30..220 && rawHr != 0x9F) rawHr else null
+            val hr = if (!isIdle && rawHr in 30..220 && rawHr != 0x9F) rawHr else null
 
             // HRV: byte[5]
             val rawHrv = raw[5].toInt() and 0xFF
-            val hrv = if (!isIdle && conf > 0 && rawHrv in 1..250) rawHrv else null
+            val hrv = if (!isIdle && rawHrv in 1..250) rawHrv else null
 
             // Respiratory rate: byte[7] / 8.0
             val rawRr = raw[7].toInt() and 0xFF
@@ -137,7 +137,7 @@ data class BulkRecord(
             } else null
 
             // SpO2: byte[8]
-            val spo2 = if (layout == BulkRecordLayout.SLEEP_VITALS && spo2Byte in 70..100) spo2Byte else null
+            val spo2 = if (!isIdle && spo2Byte in 70..100) spo2Byte else null
 
             val actiCounts = raw.sliceArray(10 until 20)
 

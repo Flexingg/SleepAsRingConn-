@@ -78,6 +78,14 @@ fun DashboardScreen(
         }
     }
 
+    // Auto-stream live telemetry and sync history whenever Dashboard is active and ring is connected
+    LaunchedEffect(isConnected) {
+        if (isConnected) {
+            BleConnectionManager.startLiveMonitoring(hrMode = true)
+            BleConnectionManager.syncHistory()
+        }
+    }
+
     // 60-second rolling history buffers for all telemetry cards
     val hrHistory = remember { mutableStateListOf<TelemetrySample>() }
     val hrvHistory = remember { mutableStateListOf<TelemetrySample>() }
@@ -540,110 +548,65 @@ fun DashboardScreen(
         }
 
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    modifier = Modifier.weight(1f),
+                    onClick = { BleConnectionManager.syncHistory() },
+                    enabled = isConnected && !isSyncing,
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Button(
-                        modifier = Modifier.weight(1f),
-                        onClick = { BleConnectionManager.syncHistory() },
-                        enabled = isConnected && !isSyncing,
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (isSyncing) "Syncing..." else "Sync Now")
+                    if (isSyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isSyncing) "Syncing..." else "Sync Now")
+                }
 
+                if (isRingLedOn) {
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
-                        onClick = {
-                            if (isLiveMonitoring) {
-                                BleConnectionManager.stopLiveMonitoring()
-                            } else {
-                                BleConnectionManager.startLiveMonitoring(hrMode = true)
-                            }
-                        },
+                        onClick = { BleConnectionManager.toggleFindRingLed(false) },
+                        enabled = isConnected,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    ) {
+                        Icon(Icons.Default.Highlight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("LED On (Tap: Off)")
+                    }
+                } else {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = { BleConnectionManager.toggleFindRingLed(true) },
                         enabled = isConnected,
                         shape = RoundedCornerShape(16.dp)
                     ) {
-                        Icon(
-                            if (isLiveMonitoring) Icons.Default.Stop else Icons.Default.Favorite,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Highlight, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (isLiveMonitoring) "Stop Live" else "Live Pulse")
+                        Text("Light LED")
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToDiagnostics,
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    FilledTonalButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            if (isLiveMonitoring) {
-                                BleConnectionManager.stopLiveMonitoring()
-                            } else {
-                                BleConnectionManager.startLiveMonitoring(hrMode = false)
-                            }
-                        },
-                        enabled = isConnected,
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Default.Air, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Live SpO2")
-                    }
-
-                    if (isRingLedOn) {
-                        FilledTonalButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = { BleConnectionManager.toggleFindRingLed(false) },
-                            enabled = isConnected,
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                        ) {
-                            Icon(Icons.Default.Highlight, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(8.dp))
-                            Text("LED On (Tap: Off)")
-                        }
-                    } else {
-                        OutlinedButton(
-                            modifier = Modifier.weight(1f),
-                            onClick = { BleConnectionManager.toggleFindRingLed(true) },
-                            enabled = isConnected,
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Icon(Icons.Default.Highlight, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Light LED")
-                        }
-                    }
-
-                    OutlinedButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = onNavigateToDiagnostics,
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Console")
-                    }
+                    Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Console")
                 }
             }
         }

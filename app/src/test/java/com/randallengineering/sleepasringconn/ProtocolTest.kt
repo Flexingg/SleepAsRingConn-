@@ -105,4 +105,41 @@ class ProtocolTest {
         assertEquals(98, record.spo2Percent)
         assertEquals(15.0, record.respiratoryRate ?: 0.0, 0.01)
     }
+
+    @Test
+    fun testBulkRecordParsing_zeroConfidence_stillParsesVitals() {
+        // Conf: 0 (byte[6] = 0x00, common in daytime epochs)
+        val recordBytes = byteArrayOf(
+            0x0C, 0x22, 0x98.toByte(), 0xC3.toByte(),
+            0x48, 0x32, 0x00, 112.toByte(), // HR=72, HRV=50, Conf=0, RR=14.0
+            0x61, 0x0A, // SpO2=97%
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00
+        )
+
+        val record = BulkRecord.parseRecord(recordBytes)
+        assertNotNull(record)
+        assertEquals(72, record!!.heartRate)
+        assertEquals(50, record.hrvRmssd)
+        assertEquals(97, record.spo2Percent)
+        assertEquals(14.0, record.respiratoryRate ?: 0.0, 0.01)
+    }
+
+    @Test
+    fun testBulkRecordParsing_sentinel159_rejectedAsNull() {
+        // HR: 0x9F (159 - sentinel / status byte), should be parsed as null
+        val recordBytes = byteArrayOf(
+            0x0C, 0x22, 0x98.toByte(), 0xC3.toByte(),
+            0x9F.toByte(), 0x32, 0x00, 112.toByte(),
+            0x61, 0x0A,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00
+        )
+
+        val record = BulkRecord.parseRecord(recordBytes)
+        assertNotNull(record)
+        assertNull(record!!.heartRate) // 0x9F rejected, not stuck at 159
+        assertEquals(50, record.hrvRmssd)
+        assertEquals(97, record.spo2Percent)
+    }
 }

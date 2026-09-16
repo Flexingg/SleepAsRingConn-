@@ -151,6 +151,32 @@ object BleConnectionManager {
                 Log.e(TAG, "Failed to auto-connect to $savedMac", e)
             }
         }
+
+        // Preload latest vitals from local database if available
+        coroutineScope.launch {
+            try {
+                val db = AppDatabase.getDatabase(context)
+                db.epochDao().getRecentEpochs(50).collect { recent ->
+                    if (_liveHeartRate.value == null) {
+                        recent.firstOrNull { it.heartRate != null }?.heartRate?.let { hr ->
+                            _liveHeartRate.value = hr
+                        }
+                    }
+                    if (_liveSpo2.value == null) {
+                        recent.firstOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
+                            _liveSpo2.value = spo2
+                        }
+                    }
+                    if (_liveHrv.value == null) {
+                        recent.firstOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
+                            _liveHrv.value = hrv
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error preloading recent vitals", e)
+            }
+        }
     }
 
     private fun log(msg: String) {
@@ -260,9 +286,6 @@ object BleConnectionManager {
         writeCharacteristic = null
         _isConnected.value = false
         _connectionState.value = "Disconnected"
-        _liveHeartRate.value = null
-        _liveSpo2.value = null
-        _liveHrv.value = null
         lastLiveHrTimestamp = 0L
     }
 
@@ -278,9 +301,6 @@ object BleConnectionManager {
                 log("GATT Disconnected (status: $status)")
                 _isConnected.value = false
                 _isLiveMonitoring.value = false
-                _liveHeartRate.value = null
-                _liveSpo2.value = null
-                _liveHrv.value = null
                 lastLiveHrTimestamp = 0L
                 _connectionState.value = "Disconnected"
                 livePollJob?.cancel()
@@ -428,13 +448,11 @@ object BleConnectionManager {
                     sendCommand(authCmd)
                     _connectionState.value = "Connected & Streaming"
 
-                    if (com.randallengineering.sleepasringconn.sleepasandroid.SleepAsAndroidBridge.isTrackingActive) {
-                        coroutineScope.launch {
-                            delay(500)
-                            startLiveMonitoring(hrMode = true)
-                            delay(1000)
-                            syncHistory()
-                        }
+                    coroutineScope.launch {
+                        delay(500)
+                        startLiveMonitoring(hrMode = true)
+                        delay(1000)
+                        syncHistory()
                     }
                 }
             }
@@ -583,11 +601,33 @@ object BleConnectionManager {
                         updateLiveHeartRate(hr)
                         log("Live HR (0x4E record): $hr BPM")
                     }
-                } else if (packet.size >= 4) {
-                    val candidate = packet[3].toInt() and 0xFF
-                    if (candidate in 30..220 && candidate != 0x9F) {
+                    records.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
+                        _liveSpo2.value = spo2
+                        log("Live SpO2 (0x4E record): $spo2 %")
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
+                            }
+                        }
+                    }
+                    records.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
+                        _liveHrv.value = hrv
+                        log("Live HRV (0x4E record): $hrv ms")
+                        if (SleepAsAndroidBridge.isTrackingActive) {
+                            appContext?.let { ctx ->
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, sdnnHrv = hrv.toFloat())
+                            }
+                        }
+                    }
+                } else if (packet.size >= 3) {
+                    val candidate = when {
+                        (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
+                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
+                        else -> null
+                    }
+                    if (candidate != null) {
                         updateLiveHeartRate(candidate)
-                        log("Live HR (0x4E byte[3]): $candidate BPM")
+                        log("Live HR (0x4E short): $candidate BPM")
                     }
                 }
                 // During active continuous live stream, report slight living baseline motion from ring
@@ -606,27 +646,35 @@ object BleConnectionManager {
                 // Live sample response
                 log("RX 0x15 frame (${packet.size} bytes): $hex")
                 if (packet.size >= 3 && packet[1] == 0x00.toByte()) {
-                    // packet[2] is often a wear/status flag (0x9F) or error sentinel. Extract HR from actual payload if available, filtering 0x9F
-                    val candidateHr = when {
-                        packet.size >= 15 && (packet[14].toInt() and 0xFF) in 30..220 && (packet[14].toInt() and 0xFF) != 0x9F -> packet[14].toInt() and 0xFF
-                        packet.size >= 5 && (packet[4].toInt() and 0xFF) in 30..220 && (packet[4].toInt() and 0xFF) != 0x9F -> packet[4].toInt() and 0xFF
-                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
-                        (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
-                        else -> null
+                    val b2 = packet[2].toInt() and 0xFF
+                    val candidateHr = if (b2 in 30..220 && b2 != 0x9F) {
+                        b2
+                    } else {
+                        when {
+                            packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
+                            packet.size >= 5 && (packet[4].toInt() and 0xFF) in 30..220 && (packet[4].toInt() and 0xFF) != 0x9F -> packet[4].toInt() and 0xFF
+                            packet.size >= 15 && (packet[14].toInt() and 0xFF) in 30..220 && (packet[14].toInt() and 0xFF) != 0x9F -> packet[14].toInt() and 0xFF
+                            else -> null
+                        }
                     }
                     if (candidateHr != null) {
                         updateLiveHeartRate(candidateHr)
                         log("Live HR (0x15): $candidateHr BPM")
                     }
-                } else if (packet.size >= 15 && packet[1] == 0x01.toByte()) {
-                    val spo2 = packet[14].toInt() and 0xFF
-                    if (spo2 in 70..100) {
-                        _liveSpo2.value = spo2
-                        log("Live SpO2 (0x15): $spo2 %")
+                } else if (packet.size >= 3 && (packet[1] == 0x01.toByte() || packet[1] == 0x02.toByte())) {
+                    val candidateSpo2 = when {
+                        packet.size >= 15 && (packet[14].toInt() and 0xFF) in 70..100 -> packet[14].toInt() and 0xFF
+                        (packet[2].toInt() and 0xFF) in 70..100 -> packet[2].toInt() and 0xFF
+                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 70..100 -> packet[3].toInt() and 0xFF
+                        else -> null
+                    }
+                    if (candidateSpo2 != null) {
+                        _liveSpo2.value = candidateSpo2
+                        log("Live SpO2 (0x15): $candidateSpo2 %")
 
                         if (SleepAsAndroidBridge.isTrackingActive) {
                             appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
+                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = candidateSpo2.toFloat())
                             }
                         }
                     }
@@ -734,20 +782,24 @@ object BleConnectionManager {
                     tick++
                     sendCommand(RingProtocol.CMD_POLL)
 
-                    // Staleness check: if no valid HR reading received in past 15 seconds, reset live HR to null
-                    if (lastLiveHrTimestamp > 0L && System.currentTimeMillis() - lastLiveHrTimestamp > 15_000L) {
+                    // Staleness check: if no valid HR reading received in past 60 seconds, reset live HR to null
+                    if (lastLiveHrTimestamp > 0L && System.currentTimeMillis() - lastLiveHrTimestamp > 60_000L) {
                         if (_liveHeartRate.value != null) {
-                            log("Live HR signal expired (no fresh pulse for 15s) -> resetting to --")
+                            log("Live HR signal expired (no fresh pulse for 60s) -> resetting to --")
                             _liveHeartRate.value = null
                         }
                     }
 
-                    if (!hrMode && tick % 15 == 0) {
-                        // In SpO2 mode, query SpO2 periodically
+                    if (tick % 15 == 0) {
+                        // In maintainer loop, query SpO2 and fetch latest buffered vitals/status periodically
                         sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
                         sendCommand(RingProtocol.CMD_FETCH)
+                        if (hrMode) {
+                            delay(100)
+                            sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
+                        }
                     } else if (tick % 20 == 0) {
-                        // Keepalive & descriptor refresh
+                        sendCommand(RingProtocol.CMD_STATUS_QUERY)
                         sendCommand(RingProtocol.CMD_FETCH)
                     }
                 }
@@ -759,8 +811,6 @@ object BleConnectionManager {
         _isLiveMonitoring.value = false
         livePollJob?.cancel()
         livePollJob = null
-        _liveHeartRate.value = null
-        _liveSpo2.value = null
         lastLiveHrTimestamp = 0L
         sendCommand(RingProtocol.CMD_SPORT_STOP)
         log("Stopped live monitoring")
