@@ -117,29 +117,40 @@ object SleepAsAndroidBridge {
         trackingJob?.cancel()
         trackingJob = scope.launch(Dispatchers.IO) {
             Log.i(TAG, "Starting periodic vitals streaming to Sleep as Android...")
+            var loopCount = 0
 
             while (isActive && isTrackingActive) {
                 delay(10000) // Pulse and sensor sync every 10 seconds
+                loopCount++
 
                 val liveHr = BleConnectionManager.liveHeartRate.value
                 val liveSpo2 = BleConnectionManager.liveSpo2.value
+                val liveHrv = BleConnectionManager.liveHrv.value
 
                 if (liveHr != null && liveHr in 30..220) {
                     sendHeartRateData(context, floatArrayOf(liveHr.toFloat()))
+                }
+
+                if (liveHr != null || liveSpo2 != null || liveHrv != null) {
                     sendExtraSensorData(
                         context = context,
-                        hr = liveHr.toFloat(),
+                        hr = liveHr?.toFloat(),
                         spo2 = liveSpo2?.toFloat(),
+                        sdnnHrv = liveHrv?.toFloat(),
                         timestampMillis = System.currentTimeMillis()
                     )
                 }
 
-                // Poll ring descriptor status (steps & wear state) and fetch new actigraphy epochs
+                // Poll ring descriptor status (steps & wear state)
                 BleConnectionManager.sendCommand(RingProtocol.CMD_STATUS_QUERY)
-                BleConnectionManager.sendCommand(RingProtocol.CMD_FETCH)
+
+                // Periodically (every 60s) fetch new epochs so newly completed sleep vitals arrive during tracking
+                if (loopCount % 6 == 0 && BleConnectionManager.isConnected.value && !BleConnectionManager.isSyncing.value) {
+                    BleConnectionManager.syncHistory()
+                }
 
                 // If live monitoring paused or ring idled out, re-assert live monitoring
-                if (!BleConnectionManager.isLiveMonitoring.value) {
+                if (!BleConnectionManager.isLiveMonitoring.value && BleConnectionManager.isConnected.value) {
                     BleConnectionManager.startLiveMonitoring(hrMode = true)
                 }
             }
@@ -194,6 +205,7 @@ object SleepAsAndroidBridge {
         val intent = Intent(ACTION_DATA_UPDATE).apply {
             setPackage(SAA_PACKAGE)
             putExtra(EXTRA_MAX_RAW_DATA, movementValues)
+            putExtra(EXTRA_DATA, movementValues)
         }
         context.sendBroadcast(intent)
         Log.d(TAG, "Sent movement DATA_UPDATE with ${movementValues.size} samples: ${movementValues.joinToString()}")
@@ -207,6 +219,7 @@ object SleepAsAndroidBridge {
         val intent = Intent(ACTION_HR_DATA_UPDATE).apply {
             setPackage(SAA_PACKAGE)
             putExtra(EXTRA_DATA, hrValues)
+            putExtra("HR_DATA", hrValues)
         }
         context.sendBroadcast(intent)
         Log.d(TAG, "Sent HR_DATA_UPDATE with ${hrValues.size} samples: ${hrValues.joinToString()}")
@@ -223,37 +236,14 @@ object SleepAsAndroidBridge {
         sdnnHrv: Float? = null,
         timestampMillis: Long = System.currentTimeMillis()
     ) {
-        if (hr != null) {
-            val intent = Intent(ACTION_EXTRA_DATA_UPDATE).apply {
-                setPackage(SAA_PACKAGE)
-                putExtra(EXTRA_DATA_HR, hr)
-                putExtra(EXTRA_DATA_TIMESTAMP, timestampMillis)
-            }
-            context.sendBroadcast(intent)
+        val intent = Intent(ACTION_EXTRA_DATA_UPDATE).apply {
+            setPackage(SAA_PACKAGE)
+            putExtra(EXTRA_DATA_TIMESTAMP, timestampMillis)
+            if (hr != null) putExtra(EXTRA_DATA_HR, hr)
+            if (spo2 != null) putExtra(EXTRA_DATA_SPO2, spo2)
+            if (respirationRate != null) putExtra(EXTRA_DATA_RESP, respirationRate)
+            if (sdnnHrv != null) putExtra(EXTRA_DATA_SDNN, sdnnHrv)
         }
-        if (spo2 != null) {
-            val intent = Intent(ACTION_EXTRA_DATA_UPDATE).apply {
-                setPackage(SAA_PACKAGE)
-                putExtra(EXTRA_DATA_SPO2, spo2)
-                putExtra(EXTRA_DATA_TIMESTAMP, timestampMillis)
-            }
-            context.sendBroadcast(intent)
-        }
-        if (respirationRate != null) {
-            val intent = Intent(ACTION_EXTRA_DATA_UPDATE).apply {
-                setPackage(SAA_PACKAGE)
-                putExtra(EXTRA_DATA_RESP, respirationRate)
-                putExtra(EXTRA_DATA_TIMESTAMP, timestampMillis)
-            }
-            context.sendBroadcast(intent)
-        }
-        if (sdnnHrv != null) {
-            val intent = Intent(ACTION_EXTRA_DATA_UPDATE).apply {
-                setPackage(SAA_PACKAGE)
-                putExtra(EXTRA_DATA_SDNN, sdnnHrv)
-                putExtra(EXTRA_DATA_TIMESTAMP, timestampMillis)
-            }
-            context.sendBroadcast(intent)
-        }
+        context.sendBroadcast(intent)
     }
 }

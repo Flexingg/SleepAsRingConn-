@@ -8,8 +8,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
@@ -35,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
 import com.randallengineering.sleepasringconn.ble.HrBroadcastManager
 import com.randallengineering.sleepasringconn.ui.theme.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,6 +60,7 @@ fun DashboardScreen(
     val broadcastBpm by HrBroadcastManager.lastBroadcastBpm.collectAsState()
 
     var showDeviceSheet by remember { mutableStateOf(false) }
+    var selectedModalMetric by remember { mutableStateOf<TelemetryMetricType?>(null) }
 
     val context = LocalContext.current
     val motionSensorManager = remember { com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(context) }
@@ -71,6 +75,37 @@ fun DashboardScreen(
             if (!com.randallengineering.sleepasringconn.sleepasandroid.SleepAsAndroidBridge.isTrackingActive) {
                 motionSensorManager.stop()
             }
+        }
+    }
+
+    // 60-second rolling history buffers for all telemetry cards
+    val hrHistory = remember { mutableStateListOf<TelemetrySample>() }
+    val hrvHistory = remember { mutableStateListOf<TelemetrySample>() }
+    val spo2History = remember { mutableStateListOf<TelemetrySample>() }
+    val tempHistory = remember { mutableStateListOf<TelemetrySample>() }
+    val stepsHistory = remember { mutableStateListOf<TelemetrySample>() }
+    val motionHistory = remember { mutableStateListOf<TelemetrySample>() }
+
+    // Periodic 1-second ticker to maintain a clean rolling 60s buffer
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000L)
+            val now = System.currentTimeMillis()
+            val cutoff = now - 60_000L
+
+            liveHr?.let { hrHistory.add(TelemetrySample(now, it.toFloat())) }
+            liveHrv?.let { hrvHistory.add(TelemetrySample(now, it.toFloat())) }
+            liveSpo2?.let { spo2History.add(TelemetrySample(now, it.toFloat())) }
+            deviceStatus?.skinTemperature?.celsius?.let { tempHistory.add(TelemetrySample(now, it.toFloat())) }
+            deviceStatus?.quarterHourSteps?.let { stepsHistory.add(TelemetrySample(now, it.toFloat())) }
+            motionHistory.add(TelemetrySample(now, currentMagnitude))
+
+            hrHistory.removeAll { it.timestamp < cutoff }
+            hrvHistory.removeAll { it.timestamp < cutoff }
+            spo2History.removeAll { it.timestamp < cutoff }
+            tempHistory.removeAll { it.timestamp < cutoff }
+            stepsHistory.removeAll { it.timestamp < cutoff }
+            motionHistory.removeAll { it.timestamp < cutoff }
         }
     }
 
@@ -380,18 +415,25 @@ fun DashboardScreen(
                     )
                 }
 
-                if (isLiveMonitoring) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = StepsGreen.copy(alpha = 0.2f)
-                    ) {
-                        Text(
-                            text = "Streaming Active",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = StepsGreen
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Tap cards for 60s graph",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (isLiveMonitoring) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = StepsGreen.copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "Streaming",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = StepsGreen
+                            )
+                        }
                     }
                 }
             }
@@ -409,7 +451,8 @@ fun DashboardScreen(
                     unit = "BPM",
                     icon = Icons.Default.Favorite,
                     color = HeartRateRed,
-                    isLive = isLiveMonitoring
+                    isLive = isLiveMonitoring,
+                    onClick = { selectedModalMetric = TelemetryMetricType.HEART_RATE }
                 )
 
                 PolishedMetricCard(
@@ -419,7 +462,8 @@ fun DashboardScreen(
                     unit = "ms",
                     icon = Icons.Default.MonitorHeart,
                     color = Color(0xFF9C27B0),
-                    isLive = isConnected
+                    isLive = isConnected,
+                    onClick = { selectedModalMetric = TelemetryMetricType.HRV }
                 )
             }
         }
@@ -436,7 +480,8 @@ fun DashboardScreen(
                     unit = "%",
                     icon = Icons.Default.Air,
                     color = Spo2Blue,
-                    isLive = isLiveMonitoring
+                    isLive = isLiveMonitoring,
+                    onClick = { selectedModalMetric = TelemetryMetricType.SPO2 }
                 )
 
                 PolishedMetricCard(
@@ -446,7 +491,8 @@ fun DashboardScreen(
                     unit = "°C",
                     icon = Icons.Default.DeviceThermostat,
                     color = TempAmber,
-                    isLive = isConnected
+                    isLive = isConnected,
+                    onClick = { selectedModalMetric = TelemetryMetricType.SKIN_TEMP }
                 )
             }
         }
@@ -463,123 +509,20 @@ fun DashboardScreen(
                     unit = "steps",
                     icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                     color = StepsGreen,
-                    isLive = isConnected
+                    isLive = isConnected,
+                    onClick = { selectedModalMetric = TelemetryMetricType.STEPS }
                 )
-            }
-        }
 
-        // 5. Accelerometer & Actigraphy Card (Sleep as Android Motion)
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.ShowChart, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                Text(
-                    text = "Motion & Actigraphy",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                PolishedMetricCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Ring Motion",
+                    value = "%.2f".format(currentMagnitude),
+                    unit = "m/s²",
+                    icon = Icons.Default.Speed,
+                    color = Color(0xFF29B6F6),
+                    isLive = isConnected,
+                    onClick = { selectedModalMetric = TelemetryMetricType.MOTION }
                 )
-            }
-        }
-
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                            }
-                            Column {
-                                Text(
-                                    text = "Ring Motion & Actigraphy",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "$lastDataSource · Zero Phone Sensors",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        val (stageText, stageColor) = when {
-                            last10sMaxAccel < 0.05f -> "Still (Deep/REM)" to StepsGreen
-                            last10sMaxAccel in 0.05f..0.30f -> "Light Motion" to TempAmber
-                            else -> "Active (Awake)" to HeartRateRed
-                        }
-
-                        Surface(
-                            color = stageColor.copy(alpha = 0.2f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = stageText,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = stageColor
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surface
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text("Live Ring Δa", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("%.2f m/s²".format(currentMagnitude), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surface
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Text("10s Ring Peak (SaA)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("%.2f m/s²".format(last10sMaxAccel), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    LiveMotionVisualizer(
-                        magnitude = currentMagnitude,
-                        x = rawAccel.first,
-                        y = rawAccel.second,
-                        z = rawAccel.third,
-                        peak10s = last10sMaxAccel
-                    )
-                }
             }
         }
 
@@ -862,6 +805,39 @@ fun DashboardScreen(
             }
         }
     }
+
+    if (selectedModalMetric != null) {
+        val metric = selectedModalMetric!!
+        ModalBottomSheet(
+            onDismissRequest = { selectedModalMetric = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        ) {
+            TelemetryModalContent(
+                metric = metric,
+                samples = when (metric) {
+                    TelemetryMetricType.HEART_RATE -> hrHistory
+                    TelemetryMetricType.HRV -> hrvHistory
+                    TelemetryMetricType.SPO2 -> spo2History
+                    TelemetryMetricType.SKIN_TEMP -> tempHistory
+                    TelemetryMetricType.STEPS -> stepsHistory
+                    TelemetryMetricType.MOTION -> motionHistory
+                },
+                currentValue = when (metric) {
+                    TelemetryMetricType.HEART_RATE -> liveHr?.toString() ?: "--"
+                    TelemetryMetricType.HRV -> liveHrv?.toString() ?: "--"
+                    TelemetryMetricType.SPO2 -> liveSpo2?.toString() ?: "--"
+                    TelemetryMetricType.SKIN_TEMP -> deviceStatus?.skinTemperature?.let { "%.1f".format(it.celsius) } ?: "--"
+                    TelemetryMetricType.STEPS -> deviceStatus?.quarterHourSteps?.toString() ?: "--"
+                    TelemetryMetricType.MOTION -> "%.2f".format(currentMagnitude)
+                },
+                rawAccel = rawAccel,
+                peak10s = last10sMaxAccel,
+                onClose = { selectedModalMetric = null }
+            )
+        }
+    }
 }
 
 @Composable
@@ -872,10 +848,13 @@ fun PolishedMetricCard(
     unit: String,
     icon: ImageVector,
     color: Color,
-    isLive: Boolean
+    isLive: Boolean,
+    onClick: (() -> Unit)? = null
 ) {
     ElevatedCard(
-        modifier = modifier,
+        modifier = modifier.then(
+            if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+        ),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -890,7 +869,20 @@ fun PolishedMetricCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                    if (onClick != null) {
+                        Icon(
+                            Icons.Default.ShowChart,
+                            contentDescription = "Tap to view graph",
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .size(32.dp)
@@ -1067,6 +1059,365 @@ fun LiveMotionVisualizer(
                     drawCircle(motionColor.copy(alpha = 0.3f), radius = 10.dp.toPx(), center = bubbleOffset)
                     drawCircle(motionColor, radius = 5.dp.toPx(), center = bubbleOffset)
                 }
+            }
+        }
+    }
+}
+
+enum class TelemetryMetricType(
+    val title: String,
+    val unit: String,
+    val icon: ImageVector,
+    val color: Color
+) {
+    HEART_RATE("Heart Rate", "BPM", Icons.Default.Favorite, HeartRateRed),
+    HRV("HRV (RMSSD)", "ms", Icons.Default.MonitorHeart, Color(0xFF9C27B0)),
+    SPO2("Blood Oxygen", "%", Icons.Default.Air, Spo2Blue),
+    SKIN_TEMP("Skin Temp", "°C", Icons.Default.DeviceThermostat, TempAmber),
+    STEPS("Steps (15m)", "steps", Icons.AutoMirrored.Filled.DirectionsWalk, StepsGreen),
+    MOTION("Ring Motion", "m/s²", Icons.Default.Speed, Color(0xFF29B6F6))
+}
+
+data class TelemetrySample(val timestamp: Long, val value: Float)
+
+private fun formatMetricVal(metric: TelemetryMetricType, value: Float): String {
+    return when (metric) {
+        TelemetryMetricType.HEART_RATE, TelemetryMetricType.HRV, TelemetryMetricType.STEPS -> value.toInt().toString()
+        TelemetryMetricType.SPO2 -> "%.0f".format(value)
+        TelemetryMetricType.SKIN_TEMP -> "%.1f".format(value)
+        TelemetryMetricType.MOTION -> "%.2f".format(value)
+    }
+}
+
+@Composable
+private fun StatSummaryChip(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    unit: String,
+    color: Color
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = color
+                )
+                if (value != "--") {
+                    Text(
+                        text = unit,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TelemetryLineGraph(
+    samples: List<TelemetrySample>,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+
+        val values = samples.map { it.value }
+        var minV = values.minOrNull() ?: 0f
+        var maxV = values.maxOrNull() ?: 1f
+        if (maxV - minV < 0.001f) {
+            maxV += 1f
+            minV -= 1f
+        }
+        val range = maxV - minV
+
+        val gridColor = Color.White.copy(alpha = 0.08f)
+        drawLine(gridColor, Offset(0f, h * 0.25f), Offset(w, h * 0.25f), strokeWidth = 1f)
+        drawLine(gridColor, Offset(0f, h * 0.50f), Offset(w, h * 0.50f), strokeWidth = 1f)
+        drawLine(gridColor, Offset(0f, h * 0.75f), Offset(w, h * 0.75f), strokeWidth = 1f)
+
+        val stepX = if (samples.size > 1) w / (samples.size - 1) else w
+        val path = Path()
+        val fillPath = Path()
+
+        val firstNormY = 1f - ((samples[0].value - minV) / range).coerceIn(0f, 1f)
+        val firstY = firstNormY * (h - 20.dp.toPx()) + 10.dp.toPx()
+        path.moveTo(0f, firstY)
+        fillPath.moveTo(0f, h)
+        fillPath.lineTo(0f, firstY)
+
+        for (i in 1 until samples.size) {
+            val currX = i * stepX
+            val normY = 1f - ((samples[i].value - minV) / range).coerceIn(0f, 1f)
+            val currY = normY * (h - 20.dp.toPx()) + 10.dp.toPx()
+            path.lineTo(currX, currY)
+            fillPath.lineTo(currX, currY)
+        }
+
+        val lastX = (samples.size - 1) * stepX
+        fillPath.lineTo(lastX, h)
+        fillPath.close()
+
+        drawPath(
+            path = fillPath,
+            brush = Brush.verticalGradient(
+                listOf(color.copy(alpha = 0.35f), Color.Transparent)
+            )
+        )
+
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+        )
+
+        // Latest value indicator
+        val latestNormY = 1f - ((samples.last().value - minV) / range).coerceIn(0f, 1f)
+        val latestY = latestNormY * (h - 20.dp.toPx()) + 10.dp.toPx()
+        val latestOffset = Offset(lastX, latestY)
+        drawCircle(color.copy(alpha = 0.3f), radius = 8.dp.toPx(), center = latestOffset)
+        drawCircle(color, radius = 4.dp.toPx(), center = latestOffset)
+    }
+}
+
+@Composable
+fun TelemetryModalContent(
+    metric: TelemetryMetricType,
+    samples: List<TelemetrySample>,
+    currentValue: String,
+    rawAccel: Triple<Float, Float, Float>,
+    peak10s: Float,
+    onClose: () -> Unit
+) {
+    val values = samples.map { it.value }
+    val minVal = values.minOrNull()
+    val maxVal = values.maxOrNull()
+    val avgVal = if (values.isNotEmpty()) values.average().toFloat() else null
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Top Bar
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(metric.color.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(metric.icon, contentDescription = null, tint = metric.color, modifier = Modifier.size(24.dp))
+                }
+                Column {
+                    Text(
+                        text = metric.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(StepsGreen)
+                        )
+                        Text(
+                            text = "Live Stream · Past 60 Seconds",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, contentDescription = "Close")
+            }
+        }
+
+        // Live Readout & Staging
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom
+        ) {
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = currentValue,
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = metric.unit,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
+
+            if (metric == TelemetryMetricType.MOTION) {
+                val (stageText, stageColor) = when {
+                    peak10s < 0.05f -> "Still (Deep/REM)" to StepsGreen
+                    peak10s in 0.05f..0.30f -> "Light Motion" to TempAmber
+                    else -> "Active (Awake)" to HeartRateRed
+                }
+                Surface(
+                    color = stageColor.copy(alpha = 0.2f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = stageText,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = stageColor
+                    )
+                }
+            }
+        }
+
+        // 60-second summary stat chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatSummaryChip(
+                modifier = Modifier.weight(1f),
+                label = "Current",
+                value = currentValue,
+                unit = metric.unit,
+                color = metric.color
+            )
+            StatSummaryChip(
+                modifier = Modifier.weight(1f),
+                label = "60s Min",
+                value = minVal?.let { formatMetricVal(metric, it) } ?: "--",
+                unit = metric.unit,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            StatSummaryChip(
+                modifier = Modifier.weight(1f),
+                label = "60s Avg",
+                value = avgVal?.let { formatMetricVal(metric, it) } ?: "--",
+                unit = metric.unit,
+                color = MaterialTheme.colorScheme.primary
+            )
+            StatSummaryChip(
+                modifier = Modifier.weight(1f),
+                label = "60s Max",
+                value = maxVal?.let { formatMetricVal(metric, it) } ?: "--",
+                unit = metric.unit,
+                color = HeartRateRed
+            )
+        }
+
+        // Live Line Chart Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(180.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+            ) {
+                if (samples.size < 2) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "Accumulating live samples (${samples.size}/60s)...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    TelemetryLineGraph(
+                        samples = samples,
+                        color = metric.color,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+
+        // Seismograph & 3D tilt reticle for Ring Motion
+        if (metric == TelemetryMetricType.MOTION) {
+            val magnitude = currentValue.toFloatOrNull() ?: 0f
+            LiveMotionVisualizer(
+                magnitude = magnitude,
+                x = rawAccel.first,
+                y = rawAccel.second,
+                z = rawAccel.third,
+                peak10s = peak10s
+            )
+        }
+
+        // Explanatory note
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = when (metric) {
+                        TelemetryMetricType.HEART_RATE -> "Streamed in real-time from the ring's PPG sensor and broadcast to Sleep as Android."
+                        TelemetryMetricType.HRV -> "Calculated RMSSD heart rate variability reflecting autonomic nervous system balance."
+                        TelemetryMetricType.SPO2 -> "Continuous blood oxygen saturation monitored via red and infrared photoplethysmography."
+                        TelemetryMetricType.SKIN_TEMP -> "High-precision ring thermistor reading finger temperature across sleep periods."
+                        TelemetryMetricType.STEPS -> "Cumulative steps recorded by the ring's internal step-counter in 15-minute intervals."
+                        TelemetryMetricType.MOTION -> "Ring 3-axis accelerometer actigraphy with zero reliance on phone sensors."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

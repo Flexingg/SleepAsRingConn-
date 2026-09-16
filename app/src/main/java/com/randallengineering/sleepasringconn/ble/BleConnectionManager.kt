@@ -257,6 +257,7 @@ object BleConnectionManager {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 log("GATT Disconnected (status: $status)")
                 _isConnected.value = false
+                _isLiveMonitoring.value = false
                 _connectionState.value = "Disconnected"
                 livePollJob?.cancel()
                 writeCharacteristic = null
@@ -402,6 +403,15 @@ object BleConnectionManager {
                     val authCmd = RingAuth.createAuthCommand(challenge, mac)
                     sendCommand(authCmd)
                     _connectionState.value = "Connected & Streaming"
+
+                    if (com.randallengineering.sleepasringconn.sleepasandroid.SleepAsAndroidBridge.isTrackingActive) {
+                        coroutineScope.launch {
+                            delay(500)
+                            startLiveMonitoring(hrMode = true)
+                            delay(1000)
+                            syncHistory()
+                        }
+                    }
                 }
             }
 
@@ -503,8 +513,8 @@ object BleConnectionManager {
                     if (latestRecord != null) {
                         val subMotions = latestRecord.subEpochMotions
                         val mps2List = subMotions.map { count ->
-                            if (count == 0) 0.0f
-                            else (0.06f + count * 0.02f).coerceIn(0.06f, 3.5f)
+                            if (count == 0) 0.025f // Biological resting micro-movement baseline so SaA accurately detects sleep stages
+                            else (0.06f + count * 0.03f).coerceIn(0.06f, 3.5f)
                         }
                         appContext?.let { ctx ->
                             com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
@@ -699,11 +709,11 @@ object BleConnectionManager {
             delay(100)
             sendCommand(RingProtocol.CMD_POLL)
 
-            // High-frequency maintainer loop: queries samples every 1s for accurate HR updates
+            // Stable maintainer loop: queries samples every 2s to maintain robust GATT stability without Nordic buffer overflows
             var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
-                    delay(1000)
+                    delay(2000)
                     tick++
                     sendCommand(RingProtocol.CMD_POLL)
 
