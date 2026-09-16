@@ -449,9 +449,7 @@ object BleConnectionManager {
                     _connectionState.value = "Connected & Streaming"
 
                     coroutineScope.launch {
-                        delay(500)
-                        startLiveMonitoring(hrMode = true)
-                        delay(1000)
+                        delay(400)
                         syncHistory()
                     }
                 }
@@ -595,10 +593,12 @@ object BleConnectionManager {
                 // Sport / Continuous Live Stream frame (ACK with CE 00 00)
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4E)
                 log("RX 0x4E frame (${packet.size} bytes): $hex")
+                var hrUpdated = false
                 if (packet.size >= 27) {
                     val records = BulkRecord.parsePage(packet)
                     records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
                         updateLiveHeartRate(hr)
+                        hrUpdated = true
                         log("Live HR (0x4E record): $hr BPM")
                     }
                     records.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
@@ -619,15 +619,19 @@ object BleConnectionManager {
                             }
                         }
                     }
-                } else if (packet.size >= 3) {
+                }
+                
+                // Fallback / direct frame: inspect candidate bytes
+                if (!hrUpdated && packet.size >= 3) {
                     val candidate = when {
                         (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
                         packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
+                        packet.size >= 5 && (packet[4].toInt() and 0xFF) in 30..220 && (packet[4].toInt() and 0xFF) != 0x9F -> packet[4].toInt() and 0xFF
                         else -> null
                     }
                     if (candidate != null) {
                         updateLiveHeartRate(candidate)
-                        log("Live HR (0x4E short): $candidate BPM")
+                        log("Live HR (0x4E direct): $candidate BPM")
                     }
                 }
                 // During active continuous live stream, report slight living baseline motion from ring
@@ -678,6 +682,16 @@ object BleConnectionManager {
                             }
                         }
                     }
+                } else if (packet.size >= 3) {
+                    val candidate = when {
+                        (packet[2].toInt() and 0xFF) in 30..220 && (packet[2].toInt() and 0xFF) != 0x9F -> packet[2].toInt() and 0xFF
+                        packet.size >= 4 && (packet[3].toInt() and 0xFF) in 30..220 && (packet[3].toInt() and 0xFF) != 0x9F -> packet[3].toInt() and 0xFF
+                        else -> null
+                    }
+                    if (candidate != null) {
+                        updateLiveHeartRate(candidate)
+                        log("Live HR (0x15 fallback): $candidate BPM")
+                    }
                 }
             }
 
@@ -726,6 +740,13 @@ object BleConnectionManager {
             currentSyncChannel = null
             syncWatchdogJob?.cancel()
             log("Full history sync complete! All channels synced.")
+            if (_isLiveMonitoring.value) {
+                coroutineScope.launch {
+                    delay(400)
+                    log("Full sync complete -> resuming live continuous telemetry stream...")
+                    startLiveMonitoring(hrMode = true)
+                }
+            }
         }
     }
 
@@ -743,6 +764,7 @@ object BleConnectionManager {
     fun syncHistory() {
         if (_isSyncing.value) return
         _isSyncing.value = true
+        livePollJob?.cancel()
         currentSyncChannel = RingProtocol.CHANNEL_SLEEP
         startChannelWatchdog()
 
@@ -774,11 +796,11 @@ object BleConnectionManager {
             delay(100)
             sendCommand(RingProtocol.CMD_POLL)
 
-            // Stable maintainer loop: queries samples every 2s to maintain robust GATT stability without Nordic buffer overflows
+            // High-frequency maintainer loop: queries samples every 1s and re-primes sport mode
             var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
-                    delay(2000)
+                    delay(1000)
                     tick++
                     sendCommand(RingProtocol.CMD_POLL)
 
@@ -790,17 +812,26 @@ object BleConnectionManager {
                         }
                     }
 
-                    if (tick % 15 == 0) {
-                        // In maintainer loop, query SpO2 and fetch latest buffered vitals/status periodically
-                        sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
-                        sendCommand(RingProtocol.CMD_FETCH)
-                        if (hrMode) {
-                            delay(100)
+                    if (hrMode) {
+                        if (tick % 10 == 0) {
+                            // Maintain sport stream continuous flow
                             sendCommand(RingProtocol.CMD_LIVE_HR_MODE)
+                            delay(50)
+                            sendCommand(RingProtocol.CMD_SPORT_START)
+                            delay(50)
+                            sendCommand(RingProtocol.CMD_FETCH)
+                        } else if (tick % 30 == 0) {
+                            // Status query for temp, steps, battery
+                            sendCommand(RingProtocol.CMD_STATUS_QUERY)
                         }
-                    } else if (tick % 20 == 0) {
-                        sendCommand(RingProtocol.CMD_STATUS_QUERY)
-                        sendCommand(RingProtocol.CMD_FETCH)
+                    } else {
+                        if (tick % 15 == 0) {
+                            sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
+                            delay(50)
+                            sendCommand(RingProtocol.CMD_FETCH)
+                        } else if (tick % 30 == 0) {
+                            sendCommand(RingProtocol.CMD_STATUS_QUERY)
+                        }
                     }
                 }
             }

@@ -81,8 +81,10 @@ fun DashboardScreen(
     // Auto-stream live telemetry and sync history whenever Dashboard is active and ring is connected
     LaunchedEffect(isConnected) {
         if (isConnected) {
+            if (!BleConnectionManager.isSyncing.value) {
+                BleConnectionManager.syncHistory()
+            }
             BleConnectionManager.startLiveMonitoring(hrMode = true)
-            BleConnectionManager.syncHistory()
         }
     }
 
