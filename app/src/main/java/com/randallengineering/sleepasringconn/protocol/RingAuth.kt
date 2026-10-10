@@ -45,7 +45,7 @@ object RingAuth {
         if (sysId.size == 8 && (sysId[3].toInt() and 0xFF) == 0xFF && (sysId[4].toInt() and 0xFF) == 0xFE) {
             return byteArrayOf(sysId[0], sysId[1], sysId[2], sysId[5], sysId[6], sysId[7])
         }
-        if (sysId.size == 8 && (sysId[4].toInt() and 0xFF) == 0xFE && (sysId[3].toInt() and 0xFF) == 0xFF) {
+        if (sysId.size == 8 && (sysId[3].toInt() and 0xFF) == 0xFE && (sysId[4].toInt() and 0xFF) == 0xFF) {
             return byteArrayOf(sysId[0], sysId[1], sysId[2], sysId[5], sysId[6], sysId[7])
         }
         if (sysId.size == 8) {

@@ -86,6 +86,7 @@ object GoalEngine {
             val status = when {
                 validCount == 0 -> GoalStatus.NO_DATA
                 dailyResults.lastOrNull()?.isAchieved == true -> GoalStatus.ACHIEVED
+                goalType == GoalType.BEDTIME_CONSISTENCY && weeklyAvg != null && abs(weeklyAvg - target) <= 0.75f -> GoalStatus.ON_TRACK
                 weeklyAvg != null && (if (goalType.higherIsBetter) weeklyAvg >= target else weeklyAvg <= target) -> GoalStatus.ON_TRACK
                 else -> GoalStatus.OFF_TRACK
             }
@@ -174,7 +175,11 @@ object GoalEngine {
             GoalType.DAILY_STEPS -> {
                 val dayLogs = statusLogs.filter { it.timestampMillis in bin.startMillis..bin.endMillis }
                 if (dayLogs.isNotEmpty()) {
-                    dayLogs.sumOf { it.quarterHourSteps }.toFloat()
+                    val bucketMs = 15 * 60 * 1000L
+                    val bucketSums = dayLogs.groupBy { it.timestampMillis / bucketMs }
+                        .values
+                        .sumOf { logsInBucket -> logsInBucket.maxOf { it.quarterHourSteps } }
+                    bucketSums.toFloat()
                 } else null
             }
             GoalType.BEDTIME_CONSISTENCY -> {

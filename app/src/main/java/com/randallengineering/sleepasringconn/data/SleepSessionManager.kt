@@ -215,7 +215,7 @@ object SleepSessionManager {
                     sessionLabel = s.sessionLabel
                 )
             }
-            database.sleepSessionDao().insertAll(entities)
+            database.sleepSessionDao().replaceAllSessions(entities)
         } catch (e: Exception) {
             e.printStackTrace()
         }

@@ -63,8 +63,8 @@ fun SleepScreen() {
     var refreshKey by remember { mutableIntStateOf(0) }
 
     val now = remember { System.currentTimeMillis() }
-    val past30d = remember { now - 30 * 24 * 60 * 60 * 1000L }
-    val epochEntities by database.epochDao().getEpochsSinceFlow(past30d).collectAsState(initial = emptyList())
+    val epochsFlow = remember(past30d) { database.epochDao().getEpochsSinceFlow(past30d) }
+    val epochEntities by epochsFlow.collectAsState(initial = emptyList())
 
     var allSessions by remember { mutableStateOf<List<SleepSession>>(emptyList()) }
 
@@ -1336,13 +1336,20 @@ fun MultiNightVitalsTrendChart(sessions: List<SleepSession>) {
 
         val hrPath = Path()
         val hrvPath = Path()
+        var firstHr = true
+        var firstHrv = true
 
         sessions.forEachIndexed { i, sess ->
             val x = i * stepX
             val hr = sess.lowestHr?.value?.toInt() ?: sess.averageHeartRate
             if (hr != null) {
                 val y = height - (((hr.coerceIn(minHr, maxHr) - minHr).toFloat() / hrRange) * height)
-                if (i == 0) hrPath.moveTo(x, y) else hrPath.lineTo(x, y)
+                if (firstHr) {
+                    hrPath.moveTo(x, y)
+                    firstHr = false
+                } else {
+                    hrPath.lineTo(x, y)
+                }
                 drawCircle(color = HeartRateRed, radius = 3.dp.toPx(), center = Offset(x, y))
             }
 
@@ -1351,7 +1358,12 @@ fun MultiNightVitalsTrendChart(sessions: List<SleepSession>) {
                 val minHrv = 10
                 val maxHrv = 120
                 val y = height - (((hrv.coerceIn(minHrv, maxHrv) - minHrv).toFloat() / (maxHrv - minHrv)) * height)
-                if (i == 0) hrvPath.moveTo(x, y) else hrvPath.lineTo(x, y)
+                if (firstHrv) {
+                    hrvPath.moveTo(x, y)
+                    firstHrv = false
+                } else {
+                    hrvPath.lineTo(x, y)
+                }
                 drawCircle(color = Color(0xFF00E676), radius = 3.dp.toPx(), center = Offset(x, y))
             }
         }

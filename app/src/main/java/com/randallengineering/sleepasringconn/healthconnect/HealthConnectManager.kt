@@ -4,12 +4,14 @@ import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Temperature
 import com.randallengineering.sleepasringconn.analytics.SleepSession
 import com.randallengineering.sleepasringconn.analytics.SleepStage
 import com.randallengineering.sleepasringconn.data.DeviceStatusEntity
 import com.randallengineering.sleepasringconn.data.EpochEntity
+import com.randallengineering.sleepasringconn.data.SleepSessionEntity
 import java.time.Instant
 import java.time.ZoneOffset
 
@@ -61,6 +63,8 @@ class HealthConnectManager(private val context: Context) {
         for (epoch in epochs) {
             val startTime = Instant.ofEpochMilli(epoch.timestampMillis)
             val endTime = Instant.ofEpochMilli(epoch.timestampMillis + 150_000L)
+            val offset = ZoneOffset.systemDefault().rules.getOffset(startTime)
+            val endOffset = ZoneOffset.systemDefault().rules.getOffset(endTime)
 
             // Heart Rate
             epoch.heartRate?.let { hr ->
@@ -71,10 +75,11 @@ class HealthConnectManager(private val context: Context) {
                 hrRecords.add(
                     HeartRateRecord(
                         startTime = startTime,
-                        startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
+                        startZoneOffset = offset,
                         endTime = endTime,
-                        endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endTime),
-                        samples = listOf(sample)
+                        endZoneOffset = endOffset,
+                        samples = listOf(sample),
+                        metadata = Metadata(clientRecordId = "ringconn_hr_${epoch.timestampMillis}")
                     )
                 )
             }
@@ -84,8 +89,9 @@ class HealthConnectManager(private val context: Context) {
                 hrvRecords.add(
                     HeartRateVariabilityRmssdRecord(
                         time = startTime,
-                        zoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
-                        heartRateVariabilityMillis = hrv.toDouble()
+                        zoneOffset = offset,
+                        heartRateVariabilityMillis = hrv.toDouble(),
+                        metadata = Metadata(clientRecordId = "ringconn_hrv_${epoch.timestampMillis}")
                     )
                 )
             }
@@ -95,8 +101,9 @@ class HealthConnectManager(private val context: Context) {
                 spo2Records.add(
                     OxygenSaturationRecord(
                         time = startTime,
-                        zoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
-                        percentage = Percentage(spo2.toDouble())
+                        zoneOffset = offset,
+                        percentage = Percentage(spo2.toDouble()),
+                        metadata = Metadata(clientRecordId = "ringconn_spo2_${epoch.timestampMillis}")
                     )
                 )
             }
@@ -106,8 +113,9 @@ class HealthConnectManager(private val context: Context) {
                 rrRecords.add(
                     RespiratoryRateRecord(
                         time = startTime,
-                        zoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
-                        rate = rr
+                        zoneOffset = offset,
+                        rate = rr,
+                        metadata = Metadata(clientRecordId = "ringconn_rr_${epoch.timestampMillis}")
                     )
                 )
             }
@@ -145,7 +153,8 @@ class HealthConnectManager(private val context: Context) {
                 BodyTemperatureRecord(
                     time = time,
                     zoneOffset = ZoneOffset.systemDefault().rules.getOffset(time),
-                    temperature = Temperature.celsius(tempC)
+                    temperature = Temperature.celsius(tempC),
+                    metadata = Metadata(clientRecordId = "ringconn_temp_${log.timestampMillis}")
                 )
             )
         }
@@ -154,6 +163,40 @@ class HealthConnectManager(private val context: Context) {
             client.insertRecords(tempRecords)
         }
         return tempRecords.size
+    }
+
+    suspend fun writeSteps(statusLogs: List<DeviceStatusEntity>): Int {
+        val client = healthConnectClient ?: return 0
+        if (statusLogs.isEmpty()) return 0
+
+        // Group status logs by 15-minute window bucket
+        val bucketMs = 15 * 60 * 1000L
+        val bucketedLogs = statusLogs.groupBy { it.timestampMillis / bucketMs }
+
+        val stepRecords = mutableListOf<StepsRecord>()
+        for ((bucketIndex, logs) in bucketedLogs) {
+            val maxSteps = logs.maxOfOrNull { it.quarterHourSteps } ?: 0
+            if (maxSteps > 0) {
+                val bucketStartMillis = bucketIndex * bucketMs
+                val startTime = Instant.ofEpochMilli(bucketStartMillis)
+                val endTime = Instant.ofEpochMilli(bucketStartMillis + bucketMs)
+                stepRecords.add(
+                    StepsRecord(
+                        startTime = startTime,
+                        startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
+                        endTime = endTime,
+                        endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endTime),
+                        count = maxSteps.toLong(),
+                        metadata = Metadata(clientRecordId = "ringconn_steps_${bucketStartMillis}")
+                    )
+                )
+            }
+        }
+
+        if (stepRecords.isNotEmpty()) {
+            client.insertRecords(stepRecords)
+        }
+        return stepRecords.size
     }
 
     suspend fun writeSleepSession(session: SleepSession): Boolean {
@@ -183,9 +226,30 @@ class HealthConnectManager(private val context: Context) {
             startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startInstant),
             endTime = endInstant,
             endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endInstant),
-            title = "Sleep (RingConn Gen 2)",
+            title = if (session.isNap) "Nap (RingConn Gen 2)" else session.sessionLabel,
             notes = "Recorded with SleepAsRingConn (Local First)",
-            stages = stages
+            stages = stages,
+            metadata = Metadata(clientRecordId = "ringconn_sleep_${session.startTimeMillis}")
+        )
+
+        client.insertRecords(listOf(sleepRecord))
+        return true
+    }
+
+    suspend fun writeSleepSessionEntity(entity: SleepSessionEntity): Boolean {
+        val client = healthConnectClient ?: return false
+
+        val startInstant = Instant.ofEpochMilli(entity.startTimeMillis)
+        val endInstant = Instant.ofEpochMilli(entity.endTimeMillis)
+
+        val sleepRecord = SleepSessionRecord(
+            startTime = startInstant,
+            startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startInstant),
+            endTime = endInstant,
+            endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endInstant),
+            title = if (entity.isNap) "Nap (RingConn Gen 2)" else entity.sessionLabel,
+            notes = "Recorded with SleepAsRingConn (Local First)",
+            metadata = Metadata(clientRecordId = "ringconn_sleep_${entity.startTimeMillis}")
         )
 
         client.insertRecords(listOf(sleepRecord))

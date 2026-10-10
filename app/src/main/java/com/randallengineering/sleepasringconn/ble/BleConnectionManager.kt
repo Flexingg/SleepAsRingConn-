@@ -126,7 +126,7 @@ object BleConnectionManager {
                     } catch (e: Exception) {
                         Log.e(TAG, "Error writing BLE packet", e)
                     }
-                    delay(35)
+                    delay(20)
                 }
             }
         }
@@ -349,6 +349,7 @@ object BleConnectionManager {
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 log("Services discovered successfully.")
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 val dataService = gatt.getService(RingProtocol.DATA_SERVICE_UUID)
                 if (dataService != null) {
                     val notifyChar = dataService.getCharacteristic(RingProtocol.NOTIFY_CHAR_UUID)
@@ -505,7 +506,8 @@ object BleConnectionManager {
             }
 
             0x4C -> {
-                // Bulk history record page
+                // Bulk history record page - extend watchdog while packets are flowing
+                startChannelWatchdog()
                 val records = BulkRecord.parsePage(packet)
                 log("Received 0x4C history page with ${records.size} epochs. ACKing with CC 00 00...")
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4C)
@@ -585,7 +587,8 @@ object BleConnectionManager {
             }
 
             0x4D -> {
-                // Sport history page (ACK with CD 00 00)
+                // Sport history page (ACK with CD 00 00) - extend watchdog
+                startChannelWatchdog()
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4D)
                 val records = SportRecord.parse4D(packet)
                 log("RX 0x4D sport batch page with ${records.size} records")
@@ -676,8 +679,11 @@ object BleConnectionManager {
             currentSyncChannel = RingProtocol.CHANNEL_ALL_DAY
             coroutineScope.launch {
                 delay(300)
-                log("Opening history sync on All-Day Channel (0x03)...")
-                sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_ALL_DAY))
+                val lastEpochSec = appContext?.let { ctx ->
+                    AppDatabase.getDatabase(ctx).epochDao().getLatestEpoch()?.timestampMillis?.div(1000L)
+                }
+                log("Opening history sync on All-Day Channel (0x03) since ${lastEpochSec ?: "14d lookback"}...")
+                sendCommand(RingProtocol.createSyncSinceLastEpochCommand(lastEpochSec, RingProtocol.CHANNEL_ALL_DAY))
                 delay(100)
                 sendCommand(RingProtocol.CMD_FETCH)
             }
@@ -716,8 +722,11 @@ object BleConnectionManager {
         startChannelWatchdog()
 
         coroutineScope.launch {
-            log("Opening history sync on Sleep Channel (0x00)...")
-            sendCommand(RingProtocol.createSyncUpToNowCommand(RingProtocol.CHANNEL_SLEEP))
+            val lastEpochSec = appContext?.let { ctx ->
+                AppDatabase.getDatabase(ctx).epochDao().getLatestEpoch()?.timestampMillis?.div(1000L)
+            }
+            log("Opening history sync on Sleep Channel (0x00) since ${lastEpochSec ?: "14d lookback"}...")
+            sendCommand(RingProtocol.createSyncSinceLastEpochCommand(lastEpochSec, RingProtocol.CHANNEL_SLEEP))
             delay(100)
             sendCommand(RingProtocol.CMD_FETCH)
         }

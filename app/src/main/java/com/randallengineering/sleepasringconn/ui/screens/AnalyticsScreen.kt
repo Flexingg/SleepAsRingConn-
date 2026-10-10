@@ -65,8 +65,10 @@ fun AnalyticsScreen() {
     val now = remember { System.currentTimeMillis() }
     val start = now - selectedRange.durationMillis
 
-    val rawEpochs by database.epochDao().getEpochsSinceFlow(start).collectAsState(initial = emptyList())
-    val statusLogs by database.deviceStatusDao().getStatusLogsSinceFlow(start).collectAsState(initial = emptyList())
+    val rawEpochsFlow = remember(start) { database.epochDao().getEpochsSinceFlow(start) }
+    val statusLogsFlow = remember(start) { database.deviceStatusDao().getStatusLogsSinceFlow(start) }
+    val rawEpochs by rawEpochsFlow.collectAsState(initial = emptyList())
+    val statusLogs by statusLogsFlow.collectAsState(initial = emptyList())
 
     val epochList = remember(rawEpochs) {
         rawEpochs.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }

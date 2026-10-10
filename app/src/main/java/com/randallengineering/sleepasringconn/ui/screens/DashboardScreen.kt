@@ -1099,6 +1099,7 @@ fun TelemetryLineGraph(
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
+        if (samples.isEmpty()) return@Canvas
         val w = size.width
         val h = size.height
 

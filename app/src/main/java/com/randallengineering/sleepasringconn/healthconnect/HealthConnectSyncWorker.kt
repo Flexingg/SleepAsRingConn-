@@ -6,6 +6,7 @@ import androidx.work.WorkerParameters
 import com.randallengineering.sleepasringconn.analytics.SleepStagingEngine
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
 import com.randallengineering.sleepasringconn.data.AppDatabase
+import com.randallengineering.sleepasringconn.data.SleepSessionManager
 import com.randallengineering.sleepasringconn.protocol.BulkRecord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -39,18 +40,18 @@ class HealthConnectSyncWorker(
                 }
             }
 
+            var totalExported = 0
+
             // 2. Fetch pending unsynced epochs
             val unsyncedEpochs = database.epochDao().getUnsyncedEpochs()
-            var totalExported = 0
 
             if (unsyncedEpochs.isNotEmpty()) {
                 // Write individual biometric series (HR, HRV, SpO2, Respiratory)
                 val writtenCount = healthConnectManager.writeEpochs(unsyncedEpochs)
                 totalExported += writtenCount
 
-                // Extract & write sleep sessions if present
-                val bulkRecords = unsyncedEpochs.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-                val sessions = SleepStagingEngine.extractAllSleepSessions(bulkRecords)
+                // Extract & write sleep sessions respecting user edits/deletions
+                val sessions = SleepSessionManager.getProcessedSessions(context, unsyncedEpochs)
                 for (session in sessions) {
                     try {
                         healthConnectManager.writeSleepSession(session)
@@ -63,11 +64,24 @@ class HealthConnectSyncWorker(
                 database.epochDao().markSynced(unsyncedEpochs.map { it.counter })
             }
 
-            // 3. Sync recent skin temperatures
+            // Sync confirmed database sleep sessions if any are pending
+            val unsyncedDbSessions = database.sleepSessionDao().getUnsyncedSessions()
+            for (dbSession in unsyncedDbSessions) {
+                try {
+                    healthConnectManager.writeSleepSessionEntity(dbSession)
+                    database.sleepSessionDao().markSynced(dbSession.startTimeMillis)
+                    totalExported++
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            // 3. Sync recent skin temperatures and 15-minute step buckets
             val recentStatus = database.deviceStatusDao().getRecentStatusLogsList(50)
             if (recentStatus.isNotEmpty()) {
                 val tempCount = healthConnectManager.writeSkinTemperatures(recentStatus)
-                totalExported += tempCount
+                val stepCount = healthConnectManager.writeSteps(recentStatus)
+                totalExported += (tempCount + stepCount)
             }
 
             val statusMsg = if (totalExported > 0) {

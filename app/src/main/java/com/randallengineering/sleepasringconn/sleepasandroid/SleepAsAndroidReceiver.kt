@@ -31,6 +31,7 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
             SleepAsAndroidBridge.ACTION_START_TRACKING -> {
                 val doHr = intent.getBooleanExtra(SleepAsAndroidBridge.EXTRA_DO_HR_MONITORING, true)
                 val doOxi = intent.getBooleanExtra(SleepAsAndroidBridge.EXTRA_DO_OXIMETER_MONITORING, true)
+                val pending = goAsync()
                 val scope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
                 SleepAsAndroidBridge.handleStartTracking(context.applicationContext, doHr, doOxi, scope)
 
@@ -39,7 +40,11 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
 
                 // Trigger live monitoring mode on the ring
                 scope.launch {
-                    BleConnectionManager.startLiveMonitoring(hrMode = true)
+                    try {
+                        BleConnectionManager.startLiveMonitoring(hrMode = true)
+                    } finally {
+                        pending.finish()
+                    }
                 }
             }
 
@@ -55,12 +60,19 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
             SleepAsAndroidBridge.ACTION_HINT -> {
                 // Flash the ring's LED briefly for anti-snoring / lucid dreaming hint
                 val repeat = intent.getIntExtra(SleepAsAndroidBridge.EXTRA_REPEAT, 1)
+                val pending = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
-                    for (i in 0 until repeat) {
-                        BleConnectionManager.sendCommand(RingProtocol.CMD_FIND_RING_LED_ON)
-                        kotlinx.coroutines.delay(1000)
+                    try {
+                        for (i in 0 until repeat) {
+                            BleConnectionManager.sendCommand(RingProtocol.CMD_FIND_RING_LED_ON)
+                            kotlinx.coroutines.delay(1000)
+                            BleConnectionManager.sendCommand(RingProtocol.CMD_FIND_RING_LED_OFF)
+                            if (i < repeat - 1) kotlinx.coroutines.delay(500)
+                        }
+                    } finally {
+                        // Ensure LED is commanded off before releasing receiver
                         BleConnectionManager.sendCommand(RingProtocol.CMD_FIND_RING_LED_OFF)
-                        if (i < repeat - 1) kotlinx.coroutines.delay(500)
+                        pending.finish()
                     }
                 }
             }

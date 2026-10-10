@@ -38,9 +38,12 @@ fun GoalsScreen() {
     val database = remember { AppDatabase.getDatabase(context) }
 
     val fourteenDaysAgo = remember { System.currentTimeMillis() - 14L * 24 * 60 * 60 * 1000 }
-    val epochs by database.epochDao().getEpochsSinceFlow(fourteenDaysAgo).collectAsState(initial = emptyList())
-    val sessions by database.sleepSessionDao().getAllSessions().collectAsState(initial = emptyList())
-    val statusLogs by database.deviceStatusDao().getStatusLogsSinceFlow(fourteenDaysAgo).collectAsState(initial = emptyList())
+    val epochsFlow = remember(fourteenDaysAgo) { database.epochDao().getEpochsSinceFlow(fourteenDaysAgo) }
+    val sessionsFlow = remember { database.sleepSessionDao().getAllSessions() }
+    val statusLogsFlow = remember(fourteenDaysAgo) { database.deviceStatusDao().getStatusLogsSinceFlow(fourteenDaysAgo) }
+    val epochs by epochsFlow.collectAsState(initial = emptyList())
+    val sessions by sessionsFlow.collectAsState(initial = emptyList())
+    val statusLogs by statusLogsFlow.collectAsState(initial = emptyList())
 
     var refreshTrigger by remember { mutableIntStateOf(0) }
     var selectedGoalForEdit by remember { mutableStateOf<GoalProgress?>(null) }

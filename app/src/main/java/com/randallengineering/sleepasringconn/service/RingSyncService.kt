@@ -46,14 +46,34 @@ class RingSyncService : Service() {
         super.onCreate()
         createNotificationChannel()
         val notification = createNotification("RingConn service active", "Monitoring ring status")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val hasBtConnect = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        this,
+                        android.Manifest.permission.BLUETOOTH_CONNECT
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                } else true
+
+                if (hasBtConnect) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("RingSyncService", "Failed to startForeground with connectedDevice", e)
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (e2: Exception) {
+                android.util.Log.e("RingSyncService", "Fallback startForeground failed", e2)
+            }
         }
 
         healthConnectManager = HealthConnectManager(this)
@@ -82,10 +102,26 @@ class RingSyncService : Service() {
                     try {
                         val unsynced = database.epochDao().getUnsyncedEpochs()
                         if (unsynced.isNotEmpty()) {
-                            val count = healthConnectManager.writeEpochs(unsynced)
-                            if (count > 0) {
-                                database.epochDao().markSynced(unsynced.map { it.counter })
+                            healthConnectManager.writeEpochs(unsynced)
+                            val sessions = com.randallengineering.sleepasringconn.data.SleepSessionManager.getProcessedSessions(this@RingSyncService, unsynced)
+                            for (s in sessions) {
+                                try { healthConnectManager.writeSleepSession(s) } catch (e: Exception) { e.printStackTrace() }
                             }
+                            database.epochDao().markSynced(unsynced.map { it.counter })
+                        }
+                        val unsyncedDbSessions = database.sleepSessionDao().getUnsyncedSessions()
+                        for (dbSession in unsyncedDbSessions) {
+                            try {
+                                healthConnectManager.writeSleepSessionEntity(dbSession)
+                                database.sleepSessionDao().markSynced(dbSession.startTimeMillis)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                        val recentStatus = database.deviceStatusDao().getRecentStatusLogsList(50)
+                        if (recentStatus.isNotEmpty()) {
+                            healthConnectManager.writeSkinTemperatures(recentStatus)
+                            healthConnectManager.writeSteps(recentStatus)
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()

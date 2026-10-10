@@ -37,9 +37,8 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        // Start background service once permissions are handled
-        RingSyncService.startService(this)
+    ) { _ ->
+        checkAndStartService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,6 +103,17 @@ class MainActivity : ComponentActivity() {
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed.toTypedArray())
         } else {
+            checkAndStartService()
+        }
+    }
+
+    private fun checkAndStartService() {
+        val hasBtPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+        if (hasBtPermission) {
             RingSyncService.startService(this)
         }
     }

@@ -30,6 +30,9 @@ interface EpochDao {
     @Query("UPDATE epoch_records SET isSyncedToHealthConnect = 1 WHERE counter IN (:counters)")
     suspend fun markSynced(counters: List<Long>)
 
+    @Query("SELECT * FROM epoch_records ORDER BY timestampMillis DESC LIMIT 1")
+    suspend fun getLatestEpoch(): EpochEntity?
+
     @Query("SELECT COUNT(*) FROM epoch_records")
     fun getCount(): Flow<Int>
 }
@@ -65,6 +68,12 @@ interface SleepSessionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(sessions: List<SleepSessionEntity>)
+
+    @Transaction
+    suspend fun replaceAllSessions(sessions: List<SleepSessionEntity>) {
+        deleteAll()
+        insertAll(sessions)
+    }
 
     @Query("SELECT * FROM sleep_sessions ORDER BY startTimeMillis DESC")
     fun getAllSessions(): Flow<List<SleepSessionEntity>>

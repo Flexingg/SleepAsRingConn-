@@ -37,8 +37,12 @@ object RingProtocol {
     val CMD_SPORT_START = byteArrayOf(0x06, 0x03, 0x07, 0x04, 0x00)
     val CMD_SPORT_STOP = byteArrayOf(0x06, 0x00, 0x00)
 
-    fun createSyncSinceCommand(unixSeconds: Long, channel: Byte = CHANNEL_SLEEP): ByteArray {
-        val delta = (unixSeconds - SYNC_EPOCH).coerceIn(0L, 0xFFFFFFFFL)
+    fun createSyncSinceCommand(startUnixSeconds: Long, channel: Byte = CHANNEL_SLEEP): ByteArray {
+        val delta = if (startUnixSeconds > SYNC_EPOCH) {
+            (startUnixSeconds - SYNC_EPOCH).coerceIn(0L, 0xFFFFFFFFL)
+        } else {
+            0L
+        }
         val c = delta.toInt()
         return byteArrayOf(
             0x02, 0x00,
@@ -50,8 +54,27 @@ object RingProtocol {
         )
     }
 
+    /**
+     * Creates a sync command starting from [lastEpochSeconds].
+     * If [lastEpochSeconds] is null or before [defaultLookbackDays] ago, syncs from [defaultLookbackDays] ago.
+     */
+    fun createSyncSinceLastEpochCommand(
+        lastEpochSeconds: Long?,
+        channel: Byte = CHANNEL_SLEEP,
+        defaultLookbackDays: Int = 14
+    ): ByteArray {
+        val nowSec = System.currentTimeMillis() / 1000L
+        val minLookbackSec = nowSec - (defaultLookbackDays * 86400L)
+        val startSec = if (lastEpochSeconds != null && lastEpochSeconds > SYNC_EPOCH) {
+            maxOf(lastEpochSeconds, minLookbackSec)
+        } else {
+            minLookbackSec
+        }
+        return createSyncSinceCommand(startSec, channel)
+    }
+
     fun createSyncUpToNowCommand(channel: Byte = CHANNEL_SLEEP): ByteArray {
-        return createSyncSinceCommand(System.currentTimeMillis() / 1000, channel)
+        return createSyncSinceLastEpochCommand(null, channel)
     }
 
     /**
