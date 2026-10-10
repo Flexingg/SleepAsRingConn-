@@ -63,6 +63,7 @@ fun SleepScreen() {
     var refreshKey by remember { mutableIntStateOf(0) }
 
     val now = remember { System.currentTimeMillis() }
+    val past30d = remember { now - 30 * 24 * 60 * 60 * 1000L }
     val epochsFlow = remember(past30d) { database.epochDao().getEpochsSinceFlow(past30d) }
     val epochEntities by epochsFlow.collectAsState(initial = emptyList())
 
