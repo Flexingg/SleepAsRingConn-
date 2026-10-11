@@ -774,7 +774,7 @@ object BleConnectionManager {
     private var currentSyncChannel: Byte? = null
     private var syncWatchdogJob: Job? = null
     private val motionBuffer = ArrayList<BulkRecord>()
-    private var lastForwardedMotionCounter = 0L
+    private val forwardedMotionCounters = LinkedHashSet<Long>()
 
     /** Floor-subtracted per-30s motion (m/s^2 scale) for epochs newer than the last one forwarded. */
     private fun motionForwardList(page: List<BulkRecord>): List<Float> = synchronized(motionBuffer) {
@@ -785,17 +785,16 @@ object BleConnectionManager {
         val floors = BulkRecord.motionFloor(motionBuffer)
         val maxAgeMs = System.currentTimeMillis() - 2 * 3_600_000L
         val out = ArrayList<Float>()
-        var newest = lastForwardedMotionCounter
         motionBuffer.forEachIndexed { i, r ->
-            if (r.counter > lastForwardedMotionCounter && r.timestampMillis >= maxAgeMs) {
+            if (r.counter !in forwardedMotionCounters && r.timestampMillis >= maxAgeMs) {
                 r.motion.forEach { m ->
                     val count = (m - floors[i]).coerceAtLeast(0)
                     out.add(if (count == 0) 0.025f else (0.06f + count * 0.03f).coerceIn(0.06f, 3.5f))
                 }
-                newest = maxOf(newest, r.counter)
+                forwardedMotionCounters.add(r.counter)
             }
         }
-        lastForwardedMotionCounter = newest
+        while (forwardedMotionCounters.size > 500) forwardedMotionCounters.remove(forwardedMotionCounters.first())
         out
     }
 
