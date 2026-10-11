@@ -14,14 +14,16 @@ package com.randallengineering.sleepasringconn.protocol
  */
 object LiveSample {
     fun parseHeartRate(packet: ByteArray): Int? {
-        if (packet.size < 3 || packet[0] != 0x15.toByte() || packet[1] != 0x00.toByte()) return null
+        if (packet.size < 4 || packet[0] != 0x15.toByte() || packet[1] != 0x00.toByte()) return null
+        if (!RingProtocol.isFrameValid(packet)) return null
         val hr = packet[2].toInt() and 0xFF
         // Values < 30 (e.g. ~8) are warm-up sentinels before optical PPG locks
-        return if (hr in 30..220 && hr != 0x9F) hr else null
+        return if (hr in 30..220) hr else null
     }
 
     fun isWarmup(packet: ByteArray): Boolean {
         if (packet.size < 3 || packet[0] != 0x15.toByte() || packet[1] != 0x00.toByte()) return false
+        if (!RingProtocol.isFrameValid(packet)) return false
         val b2 = packet[2].toInt() and 0xFF
         return b2 in 1..29
     }

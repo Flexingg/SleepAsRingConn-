@@ -47,6 +47,19 @@ fun DashboardScreen(
     val isConnected by BleConnectionManager.isConnected.collectAsState()
     val connectionState by BleConnectionManager.connectionState.collectAsState()
     val deviceStatus by BleConnectionManager.latestDeviceStatus.collectAsState()
+    val dashContext = LocalContext.current
+    val dayStartMillis = remember {
+        java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+    val todayStatusLogs by remember(dayStartMillis) {
+        com.randallengineering.sleepasringconn.data.AppDatabase.getDatabase(dashContext)
+            .deviceStatusDao().getStatusLogsSinceFlow(dayStartMillis)
+    }.collectAsState(initial = emptyList())
+    val todaySteps: Int? = if (todayStatusLogs.isEmpty()) null
+        else com.randallengineering.sleepasringconn.protocol.StepAccumulator.total(todayStatusLogs)
     val liveHr by BleConnectionManager.liveHeartRate.collectAsState()
     val liveSpo2 by BleConnectionManager.liveSpo2.collectAsState()
     val liveHrv by BleConnectionManager.liveHrv.collectAsState()
@@ -107,7 +120,7 @@ fun DashboardScreen(
             liveHrv?.let { hrvHistory.add(TelemetrySample(now, it.toFloat())) }
             liveSpo2?.let { spo2History.add(TelemetrySample(now, it.toFloat())) }
             deviceStatus?.skinTemperature?.celsius?.let { tempHistory.add(TelemetrySample(now, it.toFloat())) }
-            deviceStatus?.quarterHourSteps?.let { stepsHistory.add(TelemetrySample(now, it.toFloat())) }
+            todaySteps?.let { stepsHistory.add(TelemetrySample(now, it.toFloat())) }
             motionHistory.add(TelemetrySample(now, currentMagnitude))
 
             hrHistory.removeAll { it.timestamp < cutoff }
@@ -514,8 +527,8 @@ fun DashboardScreen(
             ) {
                 PolishedMetricCard(
                     modifier = Modifier.weight(1f),
-                    title = "Steps (15m)",
-                    value = deviceStatus?.quarterHourSteps?.toString() ?: "--",
+                    title = "Steps (today)",
+                    value = todaySteps?.toString() ?: "--",
                     unit = "steps",
                     icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                     color = StepsGreen,
@@ -794,7 +807,7 @@ fun DashboardScreen(
                     TelemetryMetricType.HRV -> liveHrv?.toString() ?: "--"
                     TelemetryMetricType.SPO2 -> liveSpo2?.toString() ?: "--"
                     TelemetryMetricType.SKIN_TEMP -> deviceStatus?.skinTemperature?.let { "%.1f".format(it.celsius) } ?: "--"
-                    TelemetryMetricType.STEPS -> deviceStatus?.quarterHourSteps?.toString() ?: "--"
+                    TelemetryMetricType.STEPS -> todaySteps?.toString() ?: "--"
                     TelemetryMetricType.MOTION -> "%.2f".format(currentMagnitude)
                 },
                 rawAccel = rawAccel,

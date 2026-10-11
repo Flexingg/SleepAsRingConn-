@@ -175,11 +175,7 @@ object GoalEngine {
             GoalType.DAILY_STEPS -> {
                 val dayLogs = statusLogs.filter { it.timestampMillis in bin.startMillis..bin.endMillis }
                 if (dayLogs.isNotEmpty()) {
-                    val bucketMs = 15 * 60 * 1000L
-                    val bucketSums = dayLogs.groupBy { it.timestampMillis / bucketMs }
-                        .values
-                        .sumOf { logsInBucket -> logsInBucket.maxOf { it.quarterHourSteps } }
-                    bucketSums.toFloat()
+                    com.randallengineering.sleepasringconn.protocol.StepAccumulator.total(dayLogs).toFloat()
                 } else null
             }
             GoalType.BEDTIME_CONSISTENCY -> {

@@ -665,11 +665,13 @@ fun TemperatureAnalyticsCard(logs: List<DeviceStatusEntity>) {
 
 @Composable
 fun ActivityMotionAnalyticsCard(epochs: List<BulkRecord>, logs: List<DeviceStatusEntity>) {
-    val motionEpochs = epochs.map { it.timestampMillis to it.motionMagnitude }
+    val sortedEpochs = epochs.sortedBy { it.timestampMillis }
+    val floored = BulkRecord.floorSubtractedMotion(sortedEpochs)
+    val motionEpochs = sortedEpochs.mapIndexed { i, e -> e.timestampMillis to floored[i] }
     val totalMotion = motionEpochs.sumOf { it.second }
 
     val stepLogs = logs.filter { it.quarterHourSteps > 0 }
-    val totalSteps = stepLogs.sumOf { it.quarterHourSteps }
+    val totalSteps = com.randallengineering.sleepasringconn.protocol.StepAccumulator.total(logs)
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),

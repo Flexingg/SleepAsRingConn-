@@ -179,14 +179,34 @@ class HealthConnectManager(private val context: Context) {
         val client = healthConnectClient ?: return 0
         if (statusLogs.isEmpty()) return 0
 
-        // Group status logs by 15-minute window bucket
+        // Re-read from the start of the earliest log's local day so the fold has a proper
+        // baseline (the caller passes only a recent slice) and per-bucket sums are stable
+        // across runs (deterministic clientRecordId => upsert, no duplicates).
+        val earliest = statusLogs.minOf { it.timestampMillis }
+        val cal = java.util.Calendar.getInstance().apply {
+            timeInMillis = earliest
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val fullLogs = try {
+            com.randallengineering.sleepasringconn.data.AppDatabase.getDatabase(context)
+                .deviceStatusDao().getStatusLogsSince(cal.timeInMillis)
+        } catch (e: Exception) {
+            statusLogs.sortedBy { it.timestampMillis }
+        }
+
+        // Fold the per-bucket running count into deltas; credit each delta to the 15-min
+        // wall-clock bucket its frame belongs to.
         val bucketMs = 15 * 60 * 1000L
-        val bucketedLogs = statusLogs.groupBy { it.timestampMillis / bucketMs }
+        val bucketTotals = com.randallengineering.sleepasringconn.protocol.StepAccumulator
+            .foldLogs(fullLogs)
+            .filter { it.timestampMillis >= earliest - bucketMs }
+            .groupBy { it.timestampMillis / bucketMs }
+            .mapValues { (_, credits) -> credits.sumOf { it.delta } }
 
         val stepRecords = mutableListOf<StepsRecord>()
-        for ((bucketIndex, logs) in bucketedLogs) {
-            val maxSteps = logs.maxOfOrNull { it.quarterHourSteps } ?: 0
-            if (maxSteps > 0) {
+        for ((bucketIndex, total) in bucketTotals) {
+            if (total > 0) {
                 val bucketStartMillis = bucketIndex * bucketMs
                 val startTime = Instant.ofEpochMilli(bucketStartMillis)
                 val endTime = Instant.ofEpochMilli(bucketStartMillis + bucketMs)
@@ -196,7 +216,7 @@ class HealthConnectManager(private val context: Context) {
                         startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startTime),
                         endTime = endTime,
                         endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endTime),
-                        count = maxSteps.toLong(),
+                        count = total.toLong(),
                         metadata = Metadata(clientRecordId = "ringconn_steps_${bucketStartMillis}")
                     )
                 )

@@ -18,9 +18,9 @@ package com.randallengineering.sleepasringconn.protocol
  * [7] = Respiratory rate * 8 (divide by 8 -> breaths per minute)
  * [8] = SpO2 % (or 0x12, 0x13, 0x11 for awake/activity/sentinel)
  * [9] = item2p5 (~0x0A)
- * [10..19] = 10-byte activity counts blob (motion magnitude)
- * [20] = info flag
- * [21..22] = tail
+ * [10..14] = five 30s motion counts (model-dependent resting baseline: 0x01 Gen2, 0x0F Gen3)
+ * [15..22] = five 12-bit big-endian magnitudes, nibble-packed (60 bits) + 4-bit info flag
+ *            (low nibble of [22])
  */
 enum class BulkRecordLayout {
     IDLE,
@@ -42,45 +42,97 @@ data class BulkRecord(
 ) {
     val timestampMillis: Long = timestampEpochSeconds * 1000L
 
+    /** Five 30s motion counts, raw bytes [10..15) (resting baseline is model dependent). */
+    val motion: List<Int>
+        get() = activityCounts.take(5).map { it.toInt() and 0xFF }
+
     /**
-     * Sub-epoch motion values (5 x 30s bins across the 150s epoch) from ring onboard IMU.
-     * Bytes 0..4 in activityCounts: baseline level (rest = ~18 / 0x12)
-     * Bytes 5..9 in activityCounts: active motion pulse counts
+     * Five 12-bit big-endian magnitudes from raw [15..23), nibble-packed: magnitude k is nibbles
+     * 3k..3k+2 counting from the high nibble of raw[15]. Empty-zero when raw is too short.
+     */
+    val activityMagnitudes: List<Int>
+        get() {
+            if (raw.size < RECORD_LENGTH) return List(5) { 0 }
+            fun nibble(i: Int): Int {
+                val b = raw[15 + i / 2].toInt() and 0xFF
+                return if (i % 2 == 0) b shr 4 else b and 0x0F
+            }
+            return (0 until 5).map { k ->
+                (nibble(k * 3) shl 8) or (nibble(k * 3 + 1) shl 4) or nibble(k * 3 + 2)
+            }
+        }
+
+    /** 4-bit info flag closing the magnitude block (low nibble of raw[22]). */
+    val activityInfoNibble: Int
+        get() = if (raw.size < RECORD_LENGTH) 0 else raw[22].toInt() and 0x0F
+
+    /** True when raw [15..20) is all zero (byte-aligned "nothing moved" verdict of the ring). */
+    val motionIntensityTailIsZero: Boolean
+        get() = raw.size < 20 || (15 until 20).all { raw[it] == 0.toByte() }
+
+    /**
+     * Floor-free per-bin motion for single-record callers: each of the five motion counts minus
+     * the record's own minimum. Across a run, prefer [floorSubtractedMotion].
      */
     val subEpochMotions: List<Int>
         get() {
-            if (activityCounts.isEmpty()) return emptyList()
-            if (activityCounts.size >= 10) {
-                return (0 until 5).map { i ->
-                    val base = activityCounts[i].toInt() and 0xFF
-                    val pulse = activityCounts[5 + i].toInt() and 0xFF
-                    val baseDelta = if (base > 18) base - 18 else 0
-                    baseDelta + pulse
-                }
-            }
-            // Fallback for short mock arrays in unit tests
-            return activityCounts.map { it.toInt() and 0xFF }
+            val m = motion
+            if (m.isEmpty()) return emptyList()
+            val lo = m.minOrNull() ?: 0
+            return m.map { it - lo }
         }
 
+    /** Floor-free fallback: spread (max - min) of the five motion counts. */
     val motionMagnitude: Int
-        get() {
-            if (activityCounts.isEmpty()) return 0
-            val motions = subEpochMotions
-            return motions.maxOrNull() ?: 0
-        }
-
+        get() = subEpochMotions.maxOrNull() ?: 0
 
     companion object {
         const val RECORD_LENGTH = 23
         const val EPOCH_SECONDS = 150
+        const val MOTION_FLOOR_WINDOW_EPOCHS = 12
+
+        /**
+         * Rolling low-percentile (10th) motion floor per record over a time-sorted list,
+         * using a centred window of [MOTION_FLOOR_WINDOW_EPOCHS] epochs (~30 min) across all
+         * five motion bins. Returned list is index-aligned with [records].
+         */
+        fun motionFloor(records: List<BulkRecord>): List<Int> {
+            val n = records.size
+            if (n == 0) return emptyList()
+            val half = MOTION_FLOOR_WINDOW_EPOCHS / 2
+            val perRecord = records.map { it.motion }
+            return List(n) { i ->
+                val lo = maxOf(0, i - half)
+                val hi = minOf(n - 1, i + half)
+                val vals = ArrayList<Int>((hi - lo + 1) * 5)
+                for (j in lo..hi) vals.addAll(perRecord[j])
+                if (vals.isEmpty()) 0 else {
+                    vals.sort()
+                    vals[(vals.size * 0.10).toInt().coerceIn(0, vals.size - 1)]
+                }
+            }
+        }
+
+        /**
+         * Per-record motion level after subtracting the rolling floor: max over the five bins of
+         * (count - floor), clamped at 0. Index-aligned with [records] (must be time-sorted).
+         */
+        fun floorSubtractedMotion(records: List<BulkRecord>): List<Int> {
+            val floors = motionFloor(records)
+            return records.mapIndexed { i, r ->
+                (r.motion.maxOrNull() ?: 0).minus(floors[i]).coerceAtLeast(0)
+            }
+        }
 
         fun parsePage(page: ByteArray): List<BulkRecord> {
             if (page.size < 4) return emptyList()
             val op = page[0].toInt() and 0xFF
             if (op != 0x4C) return emptyList()
             if (!RingProtocol.isFrameValid(page)) return emptyList()
+            if (page[1] != 0x00.toByte()) return emptyList()
 
             val recordsData = page.sliceArray(3 until page.size - 1)
+            if (recordsData.size % RECORD_LENGTH != 0) return emptyList()
             val recordCount = recordsData.size / RECORD_LENGTH
             val results = mutableListOf<BulkRecord>()
 
@@ -103,6 +155,9 @@ data class BulkRecord(
                     (raw[3].toLong() and 0xFF)
 
             val timestampSec = counter + RingProtocol.SYNC_EPOCH
+            // raw[0] is the counter's high byte (0x0C until 2026-11-28, then 0x0D...), not a fixed
+            // marker; reject only implausible timestamps (before 2020 or more than a day ahead).
+            if (timestampSec > System.currentTimeMillis() / 1000L + 86_400L) return null
 
             // Idle template: [4:8]=05 00 0c 00, [9]=0a, [10:15]=01x5, [15:22]=00x7
             val isIdle = raw[4] == 0x05.toByte() && raw[5] == 0x00.toByte() &&
@@ -123,21 +178,27 @@ data class BulkRecord(
 
             // Heart rate: byte[4]
             val rawHr = raw[4].toInt() and 0xFF
-            val hr = if (!isIdle && rawHr in 30..220 && rawHr != 0x9F && conf > 0) rawHr else null
+            val hr = if (!isIdle && rawHr in 30..220) rawHr else null
 
-            // HRV: byte[5]
+            // HRV: byte[5] (cap 200 ms; activity layout additionally needs a still epoch)
             val rawHrv = raw[5].toInt() and 0xFF
-            val hrv = if (!isIdle && rawHrv in 1..250 && conf > 0) rawHrv else null
+            val tailZero = (15 until 20).all { raw[it] == 0.toByte() }
+            val hrvGate = when (layout) {
+                BulkRecordLayout.SLEEP_VITALS -> true
+                BulkRecordLayout.ACTIVITY -> tailZero
+                BulkRecordLayout.IDLE -> false
+            }
+            val hrv = if (hrvGate && rawHrv in 1..200) rawHrv else null
 
             // Respiratory rate: byte[7] / 8.0
             val rawRr = raw[7].toInt() and 0xFF
-            val rr = if (!isIdle && rawRr > 0 && conf > 0) {
+            val rr = if (!isIdle && rawRr > 0) {
                 val calculated = rawRr / 8.0
-                if (calculated in 6.0..35.0) calculated else null
+                if (calculated in 4.0..30.0) calculated else null
             } else null
 
-            // SpO2: byte[8]
-            val spo2 = if (!isIdle && spo2Byte in 70..100 && conf > 0) spo2Byte else null
+            // SpO2: byte[8], sleep-vitals layout only
+            val spo2 = if (layout == BulkRecordLayout.SLEEP_VITALS && spo2Byte in 70..100) spo2Byte else null
 
             val actiCounts = raw.sliceArray(10 until 20)
 
