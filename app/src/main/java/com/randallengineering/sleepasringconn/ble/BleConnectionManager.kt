@@ -785,7 +785,13 @@ object BleConnectionManager {
         val floors = BulkRecord.motionFloor(motionBuffer)
         val maxAgeMs = System.currentTimeMillis() - 2 * 3_600_000L
         val out = ArrayList<Float>()
+        var skippedIdle = 0
+        var skippedSeen = 0
+        var skippedOld = 0
+        skippedIdle = page.count { it.layout == BulkRecordLayout.IDLE }
         motionBuffer.forEachIndexed { i, r ->
+            if (r.counter in forwardedMotionCounters) skippedSeen++
+            else if (r.timestampMillis < maxAgeMs) skippedOld++
             if (r.counter !in forwardedMotionCounters && r.timestampMillis >= maxAgeMs) {
                 r.motion.forEach { m ->
                     val count = (m - floors[i]).coerceAtLeast(0)
@@ -795,6 +801,7 @@ object BleConnectionManager {
             }
         }
         while (forwardedMotionCounters.size > 500) forwardedMotionCounters.remove(forwardedMotionCounters.first())
+        log("[motion-v3] page=${page.size} idle=$skippedIdle buffered=${motionBuffer.size} alreadySent=$skippedSeen tooOld=$skippedOld floors=$floors")
         out
     }
 
