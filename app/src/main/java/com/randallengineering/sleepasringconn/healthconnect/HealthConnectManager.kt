@@ -123,20 +123,28 @@ class HealthConnectManager(private val context: Context) {
 
         var writtenCount = 0
         if (hrRecords.isNotEmpty()) {
-            client.insertRecords(hrRecords)
-            writtenCount += hrRecords.size
+            hrRecords.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+                writtenCount += chunk.size
+            }
         }
         if (hrvRecords.isNotEmpty()) {
-            client.insertRecords(hrvRecords)
-            writtenCount += hrvRecords.size
+            hrvRecords.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+                writtenCount += chunk.size
+            }
         }
         if (spo2Records.isNotEmpty()) {
-            client.insertRecords(spo2Records)
-            writtenCount += spo2Records.size
+            spo2Records.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+                writtenCount += chunk.size
+            }
         }
         if (rrRecords.isNotEmpty()) {
-            client.insertRecords(rrRecords)
-            writtenCount += rrRecords.size
+            rrRecords.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+                writtenCount += chunk.size
+            }
         }
 
         return writtenCount
@@ -160,7 +168,9 @@ class HealthConnectManager(private val context: Context) {
         }
 
         if (tempRecords.isNotEmpty()) {
-            client.insertRecords(tempRecords)
+            tempRecords.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+            }
         }
         return tempRecords.size
     }
@@ -194,7 +204,9 @@ class HealthConnectManager(private val context: Context) {
         }
 
         if (stepRecords.isNotEmpty()) {
-            client.insertRecords(stepRecords)
+            stepRecords.chunked(250).forEach { chunk ->
+                client.insertRecords(chunk)
+            }
         }
         return stepRecords.size
     }

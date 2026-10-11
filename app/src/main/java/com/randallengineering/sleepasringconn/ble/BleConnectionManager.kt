@@ -6,8 +6,12 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.randallengineering.sleepasringconn.data.AppDatabase
 import com.randallengineering.sleepasringconn.data.DeviceStatusEntity
 import com.randallengineering.sleepasringconn.data.EpochEntity
@@ -88,6 +92,8 @@ object BleConnectionManager {
     private var livePollJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectDelayMs = 1500L
+    private var mtuWatchdogJob: Job? = null
+    private var authWatchdogJob: Job? = null
 
     // Movement tracking buffer for Sleep as Android
     private val movementBuffer = mutableListOf<Float>()
@@ -95,6 +101,80 @@ object BleConnectionManager {
 
     private val PREF_KEY_MAC = "paired_ring_mac"
     private var lastReportedRingSteps: Int? = null
+
+    private var isReceiverRegistered = false
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_ON) {
+                    log("Bluetooth state changed to ON. Checking auto-reconnect...")
+                    if (!_isConnected.value) {
+                        val savedMac = targetDeviceAddress ?: appContext?.getSharedPreferences("ringconn_prefs", Context.MODE_PRIVATE)?.getString(PREF_KEY_MAC, null)
+                        if (!savedMac.isNullOrEmpty()) {
+                            coroutineScope.launch {
+                                delay(1200)
+                                if (!_isConnected.value) {
+                                    bluetoothAdapter?.getRemoteDevice(savedMac)?.let { dev ->
+                                        log("Auto-connecting to $savedMac following Bluetooth enable...")
+                                        connect(dev)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun registerBluetoothStateReceiver(context: Context) {
+        if (isReceiverRegistered) return
+        try {
+            val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+            ContextCompat.registerReceiver(
+                context,
+                bluetoothStateReceiver,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED
+            )
+            isReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register Bluetooth state receiver", e)
+        }
+    }
+
+    private fun startMtuWatchdog(gatt: BluetoothGatt, immediateFallback: Boolean) {
+        mtuWatchdogJob?.cancel()
+        if (immediateFallback) {
+            log("requestMtu(512) returned false; directly initiating service discovery in 200ms...")
+            mtuWatchdogJob = coroutineScope.launch {
+                delay(200)
+                gatt.discoverServices()
+            }
+        } else {
+            mtuWatchdogJob = coroutineScope.launch {
+                delay(2500)
+                log("MTU callback timed out after 2.5s; initiating service discovery...")
+                gatt.discoverServices()
+            }
+        }
+    }
+
+    private fun startAuthWatchdog() {
+        authWatchdogJob?.cancel()
+        authWatchdogJob = coroutineScope.launch {
+            var attempt = 0
+            while (isActive && attempt < 3 && _connectionState.value == "Connected & Authenticating") {
+                delay(2500)
+                if (_connectionState.value == "Connected & Authenticating") {
+                    attempt++
+                    log("Auth challenge timeout (attempt $attempt/3): re-sending CMD_STATUS_0 (01 00 00)...")
+                    sendCommand(RingProtocol.CMD_STATUS_0)
+                }
+            }
+        }
+    }
 
     init {
         startCommandQueueWorker()
@@ -136,6 +216,8 @@ object BleConnectionManager {
         appContext = context.applicationContext
         bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = bluetoothManager?.adapter
+
+        registerBluetoothStateReceiver(context.applicationContext)
 
         // Check if previously paired device exists and auto-connect
         val prefs = context.getSharedPreferences("ringconn_prefs", Context.MODE_PRIVATE)
@@ -275,6 +357,8 @@ object BleConnectionManager {
         targetDeviceAddress = null
         reconnectJob?.cancel()
         livePollJob?.cancel()
+        mtuWatchdogJob?.cancel()
+        authWatchdogJob?.cancel()
         _isRingLedOn.value = false
         try {
             bluetoothGatt?.disconnect()
@@ -296,9 +380,12 @@ object BleConnectionManager {
                 _isConnected.value = true
                 _connectionState.value = "Connected. Configuring..."
                 reconnectDelayMs = 1500L
-                gatt.requestMtu(512)
+                val mtuRequested = gatt.requestMtu(512)
+                startMtuWatchdog(gatt, immediateFallback = !mtuRequested)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 log("GATT Disconnected (status: $status)")
+                mtuWatchdogJob?.cancel()
+                authWatchdogJob?.cancel()
                 _isConnected.value = false
                 _isLiveMonitoring.value = false
                 lastLiveHrTimestamp = 0L
@@ -339,6 +426,7 @@ object BleConnectionManager {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            mtuWatchdogJob?.cancel()
             log("MTU changed to $mtu. Discovering services in 200ms...")
             coroutineScope.launch {
                 delay(200)
@@ -347,6 +435,7 @@ object BleConnectionManager {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            mtuWatchdogJob?.cancel()
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 log("Services discovered successfully.")
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
@@ -380,6 +469,7 @@ object BleConnectionManager {
                     delay(100)
                     // Initial status read to prompt challenge response
                     sendCommand(RingProtocol.CMD_STATUS_0)
+                    startAuthWatchdog()
                 }
             } else {
                 log("onDescriptorWrite returned status $status. Retrying in 400ms...")
@@ -441,6 +531,7 @@ object BleConnectionManager {
         when (opcode) {
             0x81 -> {
                 // Status / Auth challenge reply
+                authWatchdogJob?.cancel()
                 if (packet.size >= 4 && packet[1] == 0x00.toByte()) {
                     val challenge = packet[2]
                     val mac = deviceMacBytes ?: byteArrayOf(0, 0, 0, 0, 0, 0)

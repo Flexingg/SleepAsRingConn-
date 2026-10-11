@@ -1,9 +1,16 @@
 package com.randallengineering.sleepasringconn.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "epoch_records")
+@Entity(
+    tableName = "epoch_records",
+    indices = [
+        Index(value = ["timestampMillis"]),
+        Index(value = ["isSyncedToHealthConnect"])
+    ]
+)
 data class EpochEntity(
     @PrimaryKey val counter: Long,
     val timestampMillis: Long,
@@ -27,7 +34,12 @@ data class EpochEntity(
     override fun hashCode(): Int = counter.hashCode()
 }
 
-@Entity(tableName = "device_status_logs")
+@Entity(
+    tableName = "device_status_logs",
+    indices = [
+        Index(value = ["timestampMillis"])
+    ]
+)
 data class DeviceStatusEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val timestampMillis: Long,
@@ -42,7 +54,12 @@ data class DeviceStatusEntity(
     val caseIsCharging: Boolean?
 )
 
-@Entity(tableName = "sleep_sessions")
+@Entity(
+    tableName = "sleep_sessions",
+    indices = [
+        Index(value = ["isSyncedToHealthConnect"])
+    ]
+)
 data class SleepSessionEntity(
     @PrimaryKey val startTimeMillis: Long,
     val endTimeMillis: Long,

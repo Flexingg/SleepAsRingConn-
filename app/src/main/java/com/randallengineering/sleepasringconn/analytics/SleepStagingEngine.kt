@@ -286,15 +286,15 @@ object SleepStagingEngine {
 
             when {
                 // High motion or clear awake HR elevation -> AWAKE
-                hr == null || motion >= 12 || (motion >= 4 && hr > inBedMedHr + 12) || hr > inBedFloorHr + 20 -> {
+                motion >= 10 || (motion >= 5 && (hr == null || hr > inBedMedHr + 10)) || (hr != null && hr > inBedFloorHr + 20) -> {
                     SleepStage.AWAKE
                 }
                 // Deep Sleep: Lowest nocturnal HR troughs, near-zero motion, calm HRV
-                motion <= 2 && hr <= inBedMedHr && (hrv == null || hrv <= inBedMedHrv + 10) -> {
+                motion <= 2 && hr != null && hr <= inBedMedHr && (hrv == null || hrv <= inBedMedHrv + 10) -> {
                     SleepStage.DEEP
                 }
                 // REM Sleep: Muscle atonia (low motion), elevated HRV / HR fluctuation
-                motion <= 4 && ((hrv != null && hrv >= inBedMedHrv + 4) || (hr in (inBedMedHr + 1)..(inBedMedHr + 8))) -> {
+                motion <= 4 && ((hrv != null && hrv >= inBedMedHrv + 4) || (hr != null && hr in (inBedMedHr + 1)..(inBedMedHr + 8))) -> {
                     SleepStage.REM
                 }
                 // Light Sleep
@@ -304,7 +304,8 @@ object SleepStagingEngine {
             }
         }
 
-        val smoothedStages = smoothStages(rawStages)
+        val motions = sorted.map { it.motionMagnitude }
+        val smoothedStages = smoothStages(rawStages, motions)
 
         val stagedEpochs = sorted.mapIndexed { index, record ->
             StagedEpoch(
@@ -376,13 +377,17 @@ object SleepStagingEngine {
         val awakenings = extractBouts(stagedEpochs, SleepStage.AWAKE).filter { it.startTimeMillis >= sleepOnsetMillis && it.endTimeMillis <= finalWakeMillis }
         val cycles = extractSleepCycles(stagedEpochs)
 
-        val lowestHr = stagedEpochs.filter { it.heartRate != null }.minByOrNull { it.heartRate!! }?.let {
+        val sleepEpochsWithHr = stagedEpochs.filter { it.stage != SleepStage.AWAKE && it.heartRate != null }
+        val hrSource = if (sleepEpochsWithHr.isNotEmpty()) sleepEpochsWithHr else stagedEpochs.filter { it.heartRate != null }
+        val lowestHr = hrSource.minByOrNull { it.heartRate!! }?.let {
             VitalExtreme(it.heartRate!!.toDouble(), it.timestampMillis, "BPM")
         }
         val peakHr = stagedEpochs.filter { it.heartRate != null }.maxByOrNull { it.heartRate!! }?.let {
             VitalExtreme(it.heartRate!!.toDouble(), it.timestampMillis, "BPM")
         }
-        val lowestSpo2 = stagedEpochs.filter { it.spo2 != null }.minByOrNull { it.spo2!! }?.let {
+        val sleepEpochsWithSpo2 = stagedEpochs.filter { it.stage != SleepStage.AWAKE && it.spo2 != null && it.spo2 in 70..100 }
+        val spo2Source = if (sleepEpochsWithSpo2.isNotEmpty()) sleepEpochsWithSpo2 else stagedEpochs.filter { it.spo2 != null && it.spo2 in 70..100 }
+        val lowestSpo2 = spo2Source.minByOrNull { it.spo2!! }?.let {
             VitalExtreme(it.spo2!!.toDouble(), it.timestampMillis, "%")
         }
         val peakHrv = stagedEpochs.filter { it.hrvRmssd != null }.maxByOrNull { it.hrvRmssd!! }?.let {
@@ -616,7 +621,7 @@ object SleepStagingEngine {
         return cycles
     }
 
-    private fun smoothStages(stages: List<SleepStage>): List<SleepStage> {
+    private fun smoothStages(stages: List<SleepStage>, motions: List<Int> = emptyList()): List<SleepStage> {
         if (stages.size < 3) return stages
         val smoothed = stages.toMutableList()
 
@@ -625,9 +630,14 @@ object SleepStagingEngine {
             val curr = smoothed[i]
             val next = smoothed[i + 1]
 
-            // If an isolated single epoch is sandwiched between identical stages, smooth it
-            if (prev == next && curr != prev && curr != SleepStage.AWAKE) {
-                smoothed[i] = prev
+            // If an isolated single epoch is sandwiched between identical stages:
+            // 1. Non-awake epochs always smooth to enclosing stage (e.g. DEEP -> LIGHT -> DEEP becomes DEEP)
+            // 2. An isolated single AWAKE epoch with near-zero motion (motion <= 1) is a transient sensor artifact, not conscious wakefulness
+            val motion = motions.getOrNull(i) ?: 0
+            if (prev == next && curr != prev) {
+                if (curr != SleepStage.AWAKE || motion <= 1) {
+                    smoothed[i] = prev
+                }
             }
         }
         return smoothed

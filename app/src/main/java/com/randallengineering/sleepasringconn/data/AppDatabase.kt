@@ -96,7 +96,7 @@ interface SleepSessionDao {
 
 @Database(
     entities = [EpochEntity::class, DeviceStatusEntity::class, SleepSessionEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -116,6 +116,15 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_epoch_records_timestampMillis ON epoch_records(timestampMillis)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_epoch_records_isSyncedToHealthConnect ON epoch_records(isSyncedToHealthConnect)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_device_status_logs_timestampMillis ON device_status_logs(timestampMillis)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_sleep_sessions_isSyncedToHealthConnect ON sleep_sessions(isSyncedToHealthConnect)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -123,7 +132,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "sleep_as_ringconn.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
