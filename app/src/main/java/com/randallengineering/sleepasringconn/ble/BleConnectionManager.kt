@@ -635,6 +635,9 @@ object BleConnectionManager {
                     // Forward actigraphy for records not yet forwarded (ring delivers epochs with latency,
                     // so no tight age cutoff); resting floor comes from a rolling buffer of recent epochs.
                     val mps2List = motionForwardList(records)
+                    val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                    log("Page epochs ${fmt.format(java.util.Date(records.first().timestampMillis))}..${fmt.format(java.util.Date(records.last().timestampMillis))}, " +
+                        "motion bins raw=${records.last().motion}, forwarded ${mps2List.size} bins to Sleep as Android (max ${mps2List.maxOrNull() ?: 0f})")
                     if (mps2List.isNotEmpty()) {
                         appContext?.let { ctx ->
                             com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
