@@ -632,16 +632,12 @@ object BleConnectionManager {
                 recordsSinceNudge += records.size
 
                 if (records.isNotEmpty()) {
-                    // Forward recent records' actigraphy (time-ordered) so old backlog is not replayed as live
-                    val recentCutoff = System.currentTimeMillis() - 10 * 60_000L
-                    val mps2List = records
-                        .filter { it.timestampMillis >= recentCutoff }
-                        .sortedBy { it.timestampMillis }
-                        .flatMap { it.subEpochMotions }
-                        .map { count ->
-                            if (count == 0) 0.025f // Biological resting micro-movement baseline
-                            else (0.06f + count * 0.03f).coerceIn(0.06f, 3.5f)
-                        }
+                    // Forward actigraphy for records not yet forwarded (ring delivers epochs with latency,
+                    // so no tight age cutoff); resting floor comes from a rolling buffer of recent epochs.
+                    val mps2List = motionForwardList(records)
+                    val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                    log("Page epochs ${fmt.format(java.util.Date(records.first().timestampMillis))}..${fmt.format(java.util.Date(records.last().timestampMillis))}, " +
+                        "motion bins raw=${records.last().motion}, forwarded ${mps2List.size} bins to Sleep as Android (max ${mps2List.maxOrNull() ?: 0f})")
                     if (mps2List.isNotEmpty()) {
                         appContext?.let { ctx ->
                             com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
@@ -777,6 +773,32 @@ object BleConnectionManager {
 
     private var currentSyncChannel: Byte? = null
     private var syncWatchdogJob: Job? = null
+    private val motionBuffer = ArrayList<BulkRecord>()
+    private var lastForwardedMotionCounter = 0L
+
+    /** Floor-subtracted per-30s motion (m/s^2 scale) for epochs newer than the last one forwarded. */
+    private fun motionForwardList(page: List<BulkRecord>): List<Float> = synchronized(motionBuffer) {
+        val known = motionBuffer.map { it.counter }.toHashSet()
+        for (r in page) if (r.counter !in known && r.layout != BulkRecordLayout.IDLE) motionBuffer.add(r)
+        motionBuffer.sortBy { it.counter }
+        while (motionBuffer.size > 24) motionBuffer.removeAt(0)
+        val floors = BulkRecord.motionFloor(motionBuffer)
+        val maxAgeMs = System.currentTimeMillis() - 2 * 3_600_000L
+        val out = ArrayList<Float>()
+        var newest = lastForwardedMotionCounter
+        motionBuffer.forEachIndexed { i, r ->
+            if (r.counter > lastForwardedMotionCounter && r.timestampMillis >= maxAgeMs) {
+                r.motion.forEach { m ->
+                    val count = (m - floors[i]).coerceAtLeast(0)
+                    out.add(if (count == 0) 0.025f else (0.06f + count * 0.03f).coerceIn(0.06f, 3.5f))
+                }
+                newest = maxOf(newest, r.counter)
+            }
+        }
+        lastForwardedMotionCounter = newest
+        out
+    }
+
     private var quietJob: Job? = null
     private var recordsSinceNudge = 0
     private var nudgesThisChannel = 0
