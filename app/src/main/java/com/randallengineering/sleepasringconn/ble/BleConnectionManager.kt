@@ -51,18 +51,31 @@ object BleConnectionManager {
     val liveHeartRate = _liveHeartRate.asStateFlow()
     private var lastLiveHrTimestamp: Long = 0L
 
-    private fun updateLiveHeartRate(hr: Int) {
-        // Enforce physiological range and strictly filter out 0x9F (159 - sensor status/length/sentinel byte)
-        if (hr in 30..220 && hr != 0x9F) {
-            _liveHeartRate.value = hr
-            lastLiveHrTimestamp = System.currentTimeMillis()
-            HrBroadcastManager.broadcastHeartRate(hr)
-            if (SleepAsAndroidBridge.isTrackingActive) {
-                appContext?.let { ctx ->
-                    SleepAsAndroidBridge.sendHeartRateData(ctx, floatArrayOf(hr.toFloat()))
-                    SleepAsAndroidBridge.sendExtraSensorData(ctx, hr = hr.toFloat())
-                }
+    private val liveSettler = LiveHrSettler()
+    private var lastLiveSpo2Timestamp: Long = 0L
+
+    /** Live (not history) HR. Publishes median(last 5 locked values) once >= 5 locked values exist. */
+    private fun updateLiveHeartRate(rawHr: Int) {
+        if (rawHr !in 30..220) return
+        lastLiveHrTimestamp = System.currentTimeMillis()
+        val hr = liveSettler.add(rawHr) ?: return
+        _liveHeartRate.value = hr
+        HrBroadcastManager.broadcastHeartRate(hr)
+        if (SleepAsAndroidBridge.isTrackingActive) {
+            appContext?.let { ctx ->
+                SleepAsAndroidBridge.sendHeartRateData(ctx, floatArrayOf(hr.toFloat()))
+                SleepAsAndroidBridge.sendExtraSensorData(ctx, hr = hr.toFloat())
             }
+        }
+    }
+
+    private fun expireStaleSpo2() {
+        if (lastLiveSpo2Timestamp > 0L && System.currentTimeMillis() - lastLiveSpo2Timestamp > 120_000L) {
+            if (_liveSpo2.value != null) {
+                log("Live SpO2 expired (no fresh value for 120s) -> resetting to --")
+                _liveSpo2.value = null
+            }
+            lastLiveSpo2Timestamp = 0L
         }
     }
 
@@ -91,7 +104,10 @@ object BleConnectionManager {
     // Polling job for live metrics
     private var livePollJob: Job? = null
     private var reconnectJob: Job? = null
-    private var reconnectDelayMs = 1500L
+    private var reconnectAttempt = 0
+    private val reconnectDelaysMs = longArrayOf(1000L, 5000L, 30000L)
+    private var keepaliveJob: Job? = null
+    private var isMeasuringSpo2 = false
     private var mtuWatchdogJob: Job? = null
     private var authWatchdogJob: Job? = null
 
@@ -357,6 +373,11 @@ object BleConnectionManager {
         targetDeviceAddress = null
         reconnectJob?.cancel()
         livePollJob?.cancel()
+        keepaliveJob?.cancel()
+        syncWatchdogJob?.cancel()
+        quietJob?.cancel()
+        _isSyncing.value = false
+        currentSyncChannel = null
         mtuWatchdogJob?.cancel()
         authWatchdogJob?.cancel()
         _isRingLedOn.value = false
@@ -379,7 +400,6 @@ object BleConnectionManager {
                 log("GATT Connected (status $status). Requesting MTU 512...")
                 _isConnected.value = true
                 _connectionState.value = "Connected. Configuring..."
-                reconnectDelayMs = 1500L
                 val mtuRequested = gatt.requestMtu(512)
                 startMtuWatchdog(gatt, immediateFallback = !mtuRequested)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -391,6 +411,11 @@ object BleConnectionManager {
                 lastLiveHrTimestamp = 0L
                 _connectionState.value = "Disconnected"
                 livePollJob?.cancel()
+                keepaliveJob?.cancel()
+                syncWatchdogJob?.cancel()
+                quietJob?.cancel()
+                _isSyncing.value = false
+                currentSyncChannel = null
                 writeCharacteristic = null
 
                 try {
@@ -410,8 +435,8 @@ object BleConnectionManager {
                 val savedMac = targetDeviceAddress
                 if (savedMac != null) {
                     reconnectJob?.cancel()
-                    val waitMs = reconnectDelayMs
-                    reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(16000L)
+                    reconnectAttempt++
+                    val waitMs = reconnectDelaysMs[minOf(reconnectAttempt - 1, reconnectDelaysMs.size - 1)]
                     reconnectJob = coroutineScope.launch {
                         delay(waitMs)
                         if (!_isConnected.value && targetDeviceAddress == savedMac) {
@@ -464,7 +489,6 @@ object BleConnectionManager {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 log("Notify CCCD enabled! Initiating status handshake 01 00 00...")
                 _connectionState.value = "Connected & Authenticating"
-                reconnectDelayMs = 1500L
                 coroutineScope.launch {
                     delay(100)
                     // Initial status read to prompt challenge response
@@ -525,6 +549,8 @@ object BleConnectionManager {
 
     private fun handleIncomingPacket(packet: ByteArray) {
         if (packet.isEmpty()) return
+        // First valid RX frame on a connection proves the link is delivering: reset backoff.
+        reconnectAttempt = 0
         val opcode = packet[0].toInt() and 0xFF
         val hex = packet.joinToString(" ") { "%02X".format(it) }
 
@@ -544,6 +570,7 @@ object BleConnectionManager {
                         delay(400)
                         syncHistory()
                     }
+                    startKeepalive()
                 }
             }
 
@@ -597,83 +624,62 @@ object BleConnectionManager {
             }
 
             0x4C -> {
-                // Bulk history record page - extend watchdog while packets are flowing
-                startChannelWatchdog()
+                // Bulk history record page. HISTORY ONLY: persisted, never published as live vitals.
+                noteSyncPageActivity()
                 val records = BulkRecord.parsePage(packet)
-                log("Received 0x4C history page with ${records.size} epochs. ACKing with CC 00 00...")
+                log("Received 0x4C history page with ${records.size} epochs (channel $currentSyncChannel). ACKing with CC 00 00...")
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4C)
+                recordsSinceNudge += records.size
 
                 if (records.isNotEmpty()) {
-                    // Update latest live vitals from genuine ring records
-                    records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
-                        updateLiveHeartRate(hr)
-                    }
-
-                    records.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { spo2 ->
-                        _liveSpo2.value = spo2
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, spo2 = spo2.toFloat())
-                            }
-                        }
-                    }
-
-                    records.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { hrv ->
-                        _liveHrv.value = hrv
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, sdnnHrv = hrv.toFloat())
-                            }
-                        }
-                    }
-
-                    records.lastOrNull { it.respiratoryRate != null }?.respiratoryRate?.let { rr ->
-                        if (SleepAsAndroidBridge.isTrackingActive) {
-                            appContext?.let { ctx ->
-                                SleepAsAndroidBridge.sendExtraSensorData(ctx, respirationRate = rr.toFloat())
-                            }
-                        }
-                    }
-
-                    // Feed genuine ring actigraphy counts (5 x 30s bins) from ring onboard IMU
-                    val latestRecord = records.lastOrNull()
-                    if (latestRecord != null) {
-                        val subMotions = latestRecord.subEpochMotions
-                        val mps2List = subMotions.map { count ->
-                            if (count == 0) 0.025f // Biological resting micro-movement baseline so SaA accurately detects sleep stages
+                    // Forward recent records' actigraphy (time-ordered) so old backlog is not replayed as live
+                    val recentCutoff = System.currentTimeMillis() - 10 * 60_000L
+                    val mps2List = records
+                        .filter { it.timestampMillis >= recentCutoff }
+                        .sortedBy { it.timestampMillis }
+                        .flatMap { it.subEpochMotions }
+                        .map { count ->
+                            if (count == 0) 0.025f // Biological resting micro-movement baseline
                             else (0.06f + count * 0.03f).coerceIn(0.06f, 3.5f)
                         }
+                    if (mps2List.isNotEmpty()) {
                         appContext?.let { ctx ->
                             com.randallengineering.sleepasringconn.sensor.MotionSensorManager.getInstance(ctx)
                                 .reportRingBatchMotions(mps2List, "Ring Actigraphy (0x4C)")
                         }
                     }
 
-                    coroutineScope.launch {
-                        appContext?.let { ctx ->
-                            val db = AppDatabase.getDatabase(ctx)
-                            val entities = records.map { rec ->
-                                EpochEntity(
-                                    counter = rec.counter,
-                                    timestampMillis = rec.timestampMillis,
-                                    channel = 0,
-                                    layout = rec.layout.name,
-                                    heartRate = rec.heartRate,
-                                    hrvRmssd = rec.hrvRmssd,
-                                    confidence = rec.confidence,
-                                    respiratoryRate = rec.respiratoryRate,
-                                    spo2Percent = rec.spo2Percent,
-                                    rawBytes = rec.raw
-                                )
+                    val channelInt = (currentSyncChannel?.toInt() ?: 0) and 0xFF
+                    val ctx = appContext
+                    if (ctx != null) {
+                        coroutineScope.launch {
+                            try {
+                                val entities = records.map { rec ->
+                                    EpochEntity(
+                                        counter = rec.counter,
+                                        timestampMillis = rec.timestampMillis,
+                                        channel = channelInt,
+                                        layout = rec.layout.name,
+                                        heartRate = rec.heartRate,
+                                        hrvRmssd = rec.hrvRmssd,
+                                        confidence = rec.confidence,
+                                        respiratoryRate = rec.respiratoryRate,
+                                        spo2Percent = rec.spo2Percent,
+                                        rawBytes = rec.raw
+                                    )
+                                }
+                                AppDatabase.getDatabase(ctx).epochDao().insertAll(entities)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to persist history page", e)
                             }
-                            db.epochDao().insertAll(entities)
                         }
                     }
                 }
             }
 
             0x47 -> {
-                // Bulk PPG optical trend page (ACK only)
+                // Bulk PPG optical trend page (ACK only); counts as sync activity
+                noteSyncPageActivity()
                 sendCommand(RingProtocol.CMD_PAGE_ACK_47)
             }
 
@@ -683,9 +689,7 @@ object BleConnectionManager {
                 sendCommand(RingProtocol.CMD_PAGE_ACK_4D)
                 val records = SportRecord.parse4D(packet)
                 log("RX 0x4D sport batch page with ${records.size} records")
-                records.lastOrNull { it.heartRate != null }?.heartRate?.let { hr ->
-                    updateLiveHeartRate(hr)
-                }
+                // Sport history page: not live, so no live-HR publication here.
             }
 
             0x4E -> {
@@ -727,6 +731,7 @@ object BleConnectionManager {
                 val spo2 = LiveSample.parseSpo2(packet)
                 if (spo2 != null) {
                     _liveSpo2.value = spo2
+                    lastLiveSpo2Timestamp = System.currentTimeMillis()
                     log("Live SpO2 (0x15): $spo2 %")
                     if (SleepAsAndroidBridge.isTrackingActive) {
                         appContext?.let { ctx ->
@@ -738,10 +743,13 @@ object BleConnectionManager {
 
             0x82 -> {
                 log("Sync open ACK (0x82): $hex")
-                val isEmptySignal = packet.size >= 2 && (packet[1] == 0xFF.toByte() || (packet.size >= 3 && packet[2] == 0x01.toByte()))
-                if (isEmptySignal) {
-                    log("Channel $currentSyncChannel reported empty/caught-up. Advancing...")
-                    advanceSyncChannel()
+                if (packet.size >= 2 && packet[1] == 0xFF.toByte()) {
+                    // Possibly empty/caught-up; do not advance yet. Pages cancel this timer.
+                    val ch = currentSyncChannel
+                    if (_isSyncing.value && ch != null) {
+                        log("Channel $ch reported 0xFF; arming 3s quiet timer...")
+                        armQuietTimer(ch, 3000L)
+                    }
                 } else {
                     sendCommand(RingProtocol.CMD_FETCH)
                 }
@@ -752,8 +760,13 @@ object BleConnectionManager {
             }
 
             0x50 -> {
-                log("End of history stream (0x50) for channel $currentSyncChannel")
-                advanceSyncChannel()
+                val ch = currentSyncChannel
+                if (_isSyncing.value && ch != null) {
+                    log("End of history stream (0x50) for channel $ch")
+                    advanceSyncChannel(ch)
+                } else {
+                    log("Ignoring 0x50 outside of history sync")
+                }
             }
 
             else -> {
@@ -764,44 +777,82 @@ object BleConnectionManager {
 
     private var currentSyncChannel: Byte? = null
     private var syncWatchdogJob: Job? = null
+    private var quietJob: Job? = null
+    private var recordsSinceNudge = 0
+    private var nudgesThisChannel = 0
 
-    private fun advanceSyncChannel() {
-        if (currentSyncChannel == RingProtocol.CHANNEL_SLEEP) {
+    /** A 0x4C/0x47 page arrived: cancel any 0xFF quiet timer and restart the 4s watchdog. */
+    private fun noteSyncPageActivity() {
+        quietJob?.cancel()
+        quietJob = null
+        if (_isSyncing.value) startChannelWatchdog()
+    }
+
+    private fun armQuietTimer(channel: Byte, ms: Long) {
+        quietJob?.cancel()
+        quietJob = coroutineScope.launch {
+            delay(ms)
+            onChannelQuiet(channel)
+        }
+    }
+
+    /** Quiet exit: nudge with CMD_FETCH while rounds still add records, then advance. */
+    private fun onChannelQuiet(channel: Byte) {
+        if (!_isSyncing.value || currentSyncChannel != channel) return
+        if (recordsSinceNudge > 0 && nudgesThisChannel < 30) {
+            nudgesThisChannel++
+            recordsSinceNudge = 0
+            log("Channel $channel quiet but still yielding records -> nudging with CMD_FETCH (#$nudgesThisChannel)")
+            sendCommand(RingProtocol.CMD_FETCH)
+            startChannelWatchdog()
+        } else {
+            log("Channel $channel quiet (no more pages). Advancing...")
+            advanceSyncChannel(channel)
+        }
+    }
+
+    /** Idempotent: only advances if [drained] is still the channel being drained. */
+    private fun advanceSyncChannel(drained: Byte) {
+        if (!_isSyncing.value || currentSyncChannel != drained) return
+        quietJob?.cancel()
+        quietJob = null
+        syncWatchdogJob?.cancel()
+        if (drained == RingProtocol.CHANNEL_SLEEP) {
             currentSyncChannel = RingProtocol.CHANNEL_ALL_DAY
             coroutineScope.launch {
                 delay(300)
-                val lastEpochSec = appContext?.let { ctx ->
-                    AppDatabase.getDatabase(ctx).epochDao().getLatestEpoch()?.timestampMillis?.div(1000L)
-                }
-                log("Opening history sync on All-Day Channel (0x03) since ${lastEpochSec ?: "14d lookback"}...")
-                sendCommand(RingProtocol.createSyncSinceLastEpochCommand(lastEpochSec, RingProtocol.CHANNEL_ALL_DAY))
-                delay(100)
-                sendCommand(RingProtocol.CMD_FETCH)
+                openSyncChannel(RingProtocol.CHANNEL_ALL_DAY)
             }
             startChannelWatchdog()
         } else {
             _isSyncing.value = false
             currentSyncChannel = null
-            syncWatchdogJob?.cancel()
             log("Full history sync complete! All channels synced.")
             if (_isLiveMonitoring.value) {
                 coroutineScope.launch {
                     delay(400)
                     log("Full sync complete -> resuming live continuous telemetry stream...")
-                    startLiveMonitoring(hrMode = true)
+                    startLiveMonitoring(hrMode = true, clearStale = false)
                 }
             }
         }
     }
 
+    private suspend fun openSyncChannel(channel: Byte) {
+        recordsSinceNudge = 0
+        nudgesThisChannel = 0
+        log("Opening history sync on channel 0x%02X (up to now, ring tracks its own pointer)...".format(channel))
+        sendCommand(RingProtocol.createSyncUpToNowCommand(channel))
+        delay(100)
+        sendCommand(RingProtocol.CMD_FETCH)
+    }
+
     private fun startChannelWatchdog() {
         syncWatchdogJob?.cancel()
+        val ch = currentSyncChannel ?: return
         syncWatchdogJob = coroutineScope.launch {
-            delay(4000) // If no pages or end-signal arrived after 4s, channel is empty
-            if (_isSyncing.value) {
-                log("Channel $currentSyncChannel quiet (no more pages). Advancing...")
-                advanceSyncChannel()
-            }
+            delay(4000) // If no pages or end-signal arrived after 4s, channel is quiet
+            onChannelQuiet(ch)
         }
     }
 
@@ -813,18 +864,42 @@ object BleConnectionManager {
         startChannelWatchdog()
 
         coroutineScope.launch {
-            val lastEpochSec = appContext?.let { ctx ->
-                AppDatabase.getDatabase(ctx).epochDao().getLatestEpoch()?.timestampMillis?.div(1000L)
-            }
-            log("Opening history sync on Sleep Channel (0x00) since ${lastEpochSec ?: "14d lookback"}...")
-            sendCommand(RingProtocol.createSyncSinceLastEpochCommand(lastEpochSec, RingProtocol.CHANNEL_SLEEP))
-            delay(100)
-            sendCommand(RingProtocol.CMD_FETCH)
+            openSyncChannel(RingProtocol.CHANNEL_SLEEP)
         }
     }
 
-    fun startLiveMonitoring(hrMode: Boolean = true) {
+    private fun idleKeepaliveIntervalMs(): Long {
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val isNight = hour >= 22 || hour < 7
+        return if (isNight) 60_000L else 180_000L
+    }
+
+    private fun startKeepalive() {
+        keepaliveJob?.cancel()
+        keepaliveJob = coroutineScope.launch {
+            while (isActive) {
+                delay(idleKeepaliveIntervalMs())
+                expireStaleSpo2()
+                if (_isConnected.value && _connectionState.value == "Connected & Streaming" &&
+                    !_isSyncing.value && !_isLiveMonitoring.value && !isMeasuringSpo2
+                ) {
+                    sendCommand(RingProtocol.CMD_FETCH)
+                }
+            }
+        }
+    }
+
+    fun startLiveMonitoring(hrMode: Boolean = true) = startLiveMonitoring(hrMode, clearStale = true)
+
+    private fun startLiveMonitoring(hrMode: Boolean, clearStale: Boolean) {
         _isLiveMonitoring.value = true
+        if (clearStale) {
+            liveSettler.clear()
+            _liveHeartRate.value = null
+            _liveSpo2.value = null
+            lastLiveHrTimestamp = 0L
+            lastLiveSpo2Timestamp = 0L
+        }
         if (_isSyncing.value) {
             log("History sync currently active. Live monitoring will start as soon as sync completes.")
             return
@@ -846,25 +921,20 @@ object BleConnectionManager {
             delay(2000) // Wait 2s for optical sensor window to stabilize before polling
 
             // Poll at the ring's proven cadence: 2.0s per sample
-            var tick = 0
             livePollJob = launch {
                 while (isActive && _isLiveMonitoring.value) {
                     sendCommand(RingProtocol.CMD_POLL) // 95 00 00 -> yields 0x15
                     delay(2000)
-                    tick++
 
                     // Staleness check: if no valid HR reading received in past 60 seconds, reset live HR to null
                     if (lastLiveHrTimestamp > 0L && System.currentTimeMillis() - lastLiveHrTimestamp > 60_000L) {
                         if (_liveHeartRate.value != null) {
                             log("Live HR signal expired (no fresh pulse for 60s) -> resetting to --")
                             _liveHeartRate.value = null
+                            liveSettler.clear()
                         }
                     }
-
-                    // Every 30s (15 ticks): send CMD_FETCH to update skin temp, battery, steps without resetting HR
-                    if (tick % 15 == 0) {
-                        sendCommand(RingProtocol.CMD_FETCH)
-                    }
+                    expireStaleSpo2()
                 }
             }
         }
@@ -875,8 +945,53 @@ object BleConnectionManager {
         livePollJob?.cancel()
         livePollJob = null
         lastLiveHrTimestamp = 0L
-        sendCommand(RingProtocol.CMD_SPORT_STOP)
+        liveSettler.clear()
+        // No CMD_SPORT_STOP: we never start a sport session.
         log("Stopped live monitoring")
+    }
+
+    /** Fire-and-forget wrapper around [measureSpo2Once]. */
+    fun launchSpo2Measurement() {
+        coroutineScope.launch { measureSpo2Once() }
+    }
+
+    /**
+     * One-shot SpO2 measurement: D0 00 00, 06 02 00, 07 00 00 (250 ms apart), then poll 95 00 00
+     * every 2 s for up to 45 s until a valid `15 01` SpO2 arrives. Returns to HR mode if live
+     * monitoring was on. Returns the SpO2 value or null on timeout / not possible.
+     */
+    suspend fun measureSpo2Once(): Int? {
+        if (!_isConnected.value || _isSyncing.value || isMeasuringSpo2) return null
+        isMeasuringSpo2 = true
+        val wasLive = _isLiveMonitoring.value
+        livePollJob?.cancel()
+        livePollJob = null
+        var result: Int? = null
+        try {
+            val mark = System.currentTimeMillis()
+            log("Starting one-shot SpO2 measurement...")
+            sendCommand(RingProtocol.CMD_STATUS_QUERY)
+            delay(250)
+            sendCommand(RingProtocol.CMD_LIVE_SPO2_MODE)
+            delay(250)
+            sendCommand(RingProtocol.CMD_FETCH)
+            val deadline = mark + 45_000L
+            while (System.currentTimeMillis() < deadline && _isConnected.value) {
+                sendCommand(RingProtocol.CMD_POLL)
+                delay(2000)
+                if (lastLiveSpo2Timestamp >= mark) {
+                    result = _liveSpo2.value
+                    break
+                }
+            }
+            log(if (result != null) "One-shot SpO2 result: $result %" else "One-shot SpO2 timed out")
+        } finally {
+            isMeasuringSpo2 = false
+            if (wasLive && _isLiveMonitoring.value && _isConnected.value) {
+                startLiveMonitoring(hrMode = true, clearStale = false)
+            }
+        }
+        return result
     }
 
     fun toggleFindRingLed(enable: Boolean? = null) {

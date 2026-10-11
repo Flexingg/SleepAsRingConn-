@@ -6,7 +6,7 @@ package com.randallengineering.sleepasringconn.protocol
  * 0x4E format (13 bytes):
  *   [0]      = 0x4E opcode
  *   [1:5]    = cursor:4 BE (seconds since SYNC_EPOCH) - interval end time
- *   [5]      = HR bpm (valid in 30..220 and != 0x9F)
+ *   [5]      = HR bpm (valid in 30..220)
  *   [6]      = steps / motion count in this ~10s interval
  *   [7:12]   = quality / misc fields
  *   [12]     = XOR checksum
@@ -18,8 +18,8 @@ package com.randallengineering.sleepasringconn.protocol
  *   [3:end-1]= N * 11-byte records:
  *              [0:4] = cursor:4 BE
  *              [4]   = HR bpm
- *              [5:7] = motion count (uint16 LE)
- *              [7:9] = field3
+ *              [5]   = steps (single byte)
+ *              [6:9] = field3
  *              [9]   = confidence
  *              [10]  = pad
  *   [end]    = XOR checksum
@@ -39,7 +39,7 @@ data class SportRecord(
                     ((frame[3].toLong() and 0xFF) shl 8) or
                     (frame[4].toLong() and 0xFF)
             val hrRaw = frame[5].toInt() and 0xFF
-            val hr = if (hrRaw in 30..220 && hrRaw != 0x9F) hrRaw else null
+            val hr = if (hrRaw in 30..220) hrRaw else null
             val steps = frame[6].toInt() and 0xFF
             val conf = if (frame.size >= 11) frame[10].toInt() and 0xFF else 0
             return SportRecord(
@@ -55,6 +55,7 @@ data class SportRecord(
             if (!RingProtocol.isFrameValid(page)) return emptyList()
             val payload = page.sliceArray(3 until page.size - 1)
             val recordLen = 11
+            if (payload.size % recordLen != 0) return emptyList()
             val count = payload.size / recordLen
             val results = mutableListOf<SportRecord>()
             for (i in 0 until count) {
@@ -64,8 +65,8 @@ data class SportRecord(
                         ((payload[off + 2].toLong() and 0xFF) shl 8) or
                         (payload[off + 3].toLong() and 0xFF)
                 val hrRaw = payload[off + 4].toInt() and 0xFF
-                val hr = if (hrRaw in 30..220 && hrRaw != 0x9F) hrRaw else null
-                val steps = (payload[off + 5].toInt() and 0xFF) or ((payload[off + 6].toInt() and 0xFF) shl 8)
+                val hr = if (hrRaw in 30..220) hrRaw else null
+                val steps = payload[off + 5].toInt() and 0xFF
                 val conf = payload[off + 9].toInt() and 0xFF
                 results.add(
                     SportRecord(

@@ -103,9 +103,12 @@ object SleepStagingEngine {
             .sortedBy { it.timestampMillis }
         if (nonIdle.size < 5) return emptyList()
 
+        // Floor-subtracted motion (rolling ~30 min low-percentile floor), index-aligned with nonIdle
+        val motionLevels = BulkRecord.floorSubtractedMotion(nonIdle)
+
         // 1. Calculate adaptive baseline resting heart rate for the user
         val stillHrs = nonIdle
-            .filter { it.motionMagnitude <= 3 && it.heartRate != null && it.heartRate in 35..150 }
+            .filterIndexed { i, r -> motionLevels[i] <= 3 && r.heartRate != null && r.heartRate in 35..150 }
             .map { it.heartRate!! }
         val allHrs = nonIdle.mapNotNull { it.heartRate }.filter { it in 35..180 }
         if (allHrs.isEmpty()) return emptyList()
@@ -115,8 +118,9 @@ object SleepStagingEngine {
         val medianHr = sortedStillHrs[sortedStillHrs.size / 2]
         val sleepThresholdHr = minOf(medianHr + 5, floorHr + 16)
 
-        fun isResting(r: BulkRecord): Boolean {
-            val mot = r.motionMagnitude
+        fun isResting(i: Int): Boolean {
+            val r = nonIdle[i]
+            val mot = motionLevels[i]
             val hr = r.heartRate
             return when {
                 // Obvious active daytime movement
@@ -144,7 +148,7 @@ object SleepStagingEngine {
             var startCandidate = -1
 
             for (i in idx until n) {
-                if (isResting(nonIdle[i])) {
+                if (isResting(i)) {
                     if (runCount == 0) startCandidate = i
                     runCount++
                     if (runCount >= 3) break
@@ -186,7 +190,7 @@ object SleepStagingEngine {
                     break
                 }
 
-                if (isResting(r)) {
+                if (isResting(j)) {
                     lastSleepIdx = j
                     wakeCount = 0
                 } else {
@@ -205,7 +209,7 @@ object SleepStagingEngine {
             val offsetIdx = lastSleepIdx
             val clusterRecords = nonIdle.subList(onsetIdx, offsetIdx + 1)
 
-            val restingCount = clusterRecords.count { isResting(it) }
+            val restingCount = (onsetIdx..offsetIdx).count { isResting(it) }
             val estimatedSleepMinutes = restingCount * 5 / 2
 
             // Require at least 12 minutes of actual sleep
@@ -279,8 +283,9 @@ object SleepStagingEngine {
         val inBedMedHrv = if (inBedHrvs.isNotEmpty()) inBedHrvs.sorted()[inBedHrvs.size / 2] else 40
 
         // Classify each epoch
-        val rawStages = sorted.map { record ->
-            val motion = record.motionMagnitude
+        val motions = BulkRecord.floorSubtractedMotion(sorted)
+        val rawStages = sorted.mapIndexed { idx, record ->
+            val motion = motions[idx]
             val hr = record.heartRate
             val hrv = record.hrvRmssd
 
@@ -304,7 +309,6 @@ object SleepStagingEngine {
             }
         }
 
-        val motions = sorted.map { it.motionMagnitude }
         val smoothedStages = smoothStages(rawStages, motions)
 
         val stagedEpochs = sorted.mapIndexed { index, record ->
@@ -315,7 +319,7 @@ object SleepStagingEngine {
                 hrvRmssd = record.hrvRmssd,
                 spo2 = record.spo2Percent,
                 respiratoryRate = record.respiratoryRate,
-                motionIntensity = record.motionMagnitude
+                motionIntensity = motions[index]
             )
         }
 

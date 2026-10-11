@@ -46,6 +46,7 @@ data class DeviceStatus(
             if (!RingProtocol.isFrameValid(frame)) return null
 
             val battery = frame[1].toInt() and 0xFF
+            if (battery !in 1..100) return null
             val state = frame[2].toInt() and 0xFF
             val onCharger = state == 0x04
             val sport = state == 0x06
@@ -69,7 +70,7 @@ data class DeviceStatus(
             } else null
 
             return DeviceStatus(
-                batteryPercent = battery.coerceIn(0, 100),
+                batteryPercent = battery,
                 stateByte = state,
                 isOnCharger = onCharger,
                 isSportMode = sport,

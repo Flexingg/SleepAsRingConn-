@@ -126,8 +126,7 @@ class ProtocolTest {
     }
 
     @Test
-    fun testBulkRecordParsing_sentinel159_rejectedAsNull() {
-        // HR: 0x9F (159 - sentinel / status byte), should be parsed as null
+    fun testBulkRecordParsing_hr159_noLongerExcluded() {
         val recordBytes = byteArrayOf(
             0x0C, 0x22, 0x98.toByte(), 0xC3.toByte(),
             0x9F.toByte(), 0x32, 0x00, 112.toByte(),
@@ -135,12 +134,91 @@ class ProtocolTest {
             0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00
         )
-
         val record = BulkRecord.parseRecord(recordBytes)
         assertNotNull(record)
-        assertNull(record!!.heartRate) // 0x9F rejected, not stuck at 159
+        assertEquals(159, record!!.heartRate)
         assertEquals(50, record.hrvRmssd)
-        assertEquals(97, record.spo2Percent)
+    }
+
+    @Test
+    fun testBulkRecord_badMarkerRejected() {
+        val bytes = ByteArray(23)
+        bytes[0] = 0x0D
+        assertNull(BulkRecord.parseRecord(bytes))
+    }
+
+    @Test
+    fun testBulkRecord_activityMagnitudesNibbleUnpacking() {
+        val raw = ByteArray(23)
+        raw[0] = 0x0C
+        raw[4] = 70; raw[5] = 40; raw[6] = 5; raw[7] = 120; raw[8] = 98.toByte(); raw[9] = 0x0A
+        for (i in 10 until 15) raw[i] = 1
+        // nibbles: 123 456 789 ABC DEF, info 5  => bytes 12 34 56 78 9A BC DE F5
+        val packed = intArrayOf(0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF5)
+        for (i in packed.indices) raw[15 + i] = packed[i].toByte()
+        val rec = BulkRecord.parseRecord(raw)!!
+        assertEquals(listOf(0x123, 0x456, 0x789, 0xABC, 0xDEF), rec.activityMagnitudes)
+        assertEquals(5, rec.activityInfoNibble)
+        assertFalse(rec.motionIntensityTailIsZero)
+        assertEquals(listOf(1, 1, 1, 1, 1), rec.motion)
+    }
+
+    @Test
+    fun testBulkRecord_vitalGating() {
+        // ACTIVITY layout (spo2 byte 0x12) with non-zero tail: HRV dropped, SpO2 null
+        val raw = ByteArray(23)
+        raw[0] = 0x0C; raw[4] = 80; raw[5] = 50; raw[7] = 120; raw[8] = 0x12; raw[9] = 0x0A
+        raw[16] = 3
+        val moving = BulkRecord.parseRecord(raw)!!
+        assertEquals(BulkRecordLayout.ACTIVITY, moving.layout)
+        assertNull(moving.hrvRmssd)
+        assertNull(moving.spo2Percent)
+        assertEquals(80, moving.heartRate)
+        raw[16] = 0
+        assertEquals(50, BulkRecord.parseRecord(raw)!!.hrvRmssd)
+        // HRV > 200 rejected, RR out of range rejected
+        val hi = ByteArray(23)
+        hi[0] = 0x0C; hi[4] = 60; hi[5] = 201.toByte(); hi[7] = 20; hi[8] = 98.toByte(); hi[9] = 0x0A
+        val r = BulkRecord.parseRecord(hi)!!
+        assertNull(r.hrvRmssd)
+        assertNull(r.respiratoryRate) // 2.5 brpm
+    }
+
+    @Test
+    fun testBulkPage_validation() {
+        val rec = ByteArray(23)
+        rec[0] = 0x0C; rec[4] = 60; rec[5] = 40; rec[7] = 120; rec[8] = 98.toByte(); rec[9] = 0x0A
+        val body = byteArrayOf(0x4C, 0x00, 0x00) + rec
+        val page = body + RingProtocol.computeXorTrailer(body)
+        assertEquals(1, BulkRecord.parsePage(page).size)
+
+        val bad1 = byteArrayOf(0x4C, 0x01, 0x00) + rec
+        assertTrue(BulkRecord.parsePage(bad1 + RingProtocol.computeXorTrailer(bad1)).isEmpty())
+        val bad2 = byteArrayOf(0x4C, 0x00, 0x00) + rec + byteArrayOf(0x00)
+        assertTrue(BulkRecord.parsePage(bad2 + RingProtocol.computeXorTrailer(bad2)).isEmpty())
+        assertTrue(BulkRecord.parsePage(page.copyOf().also { it[5] = 99 }).isEmpty())
+    }
+
+    @Test
+    fun testSportRecord4D_singleByteStepsAndLengthCheck() {
+        val rec = byteArrayOf(0x0C, 0x22, 0x98.toByte(), 0x88.toByte(), 159.toByte(), 7, 1, 0, 0, 5, 0)
+        val body = byteArrayOf(0x4D, 0x00, 0x01) + rec
+        val parsed = SportRecord.parse4D(body + RingProtocol.computeXorTrailer(body))
+        assertEquals(1, parsed.size)
+        assertEquals(7, parsed[0].steps)
+        assertEquals(159, parsed[0].heartRate)
+        val body2 = body + byteArrayOf(0x00)
+        assertTrue(SportRecord.parse4D(body2 + RingProtocol.computeXorTrailer(body2)).isEmpty())
+    }
+
+    @Test
+    fun testDeviceStatus_invalidBatteryRejected() {
+        val body = ByteArray(18)
+        body[0] = 0x10
+        body[1] = 0
+        assertNull(DeviceStatus.parse(body + RingProtocol.computeXorTrailer(body)))
+        body[1] = 101
+        assertNull(DeviceStatus.parse(body + RingProtocol.computeXorTrailer(body)))
     }
 
     @Test
