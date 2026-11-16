@@ -12,6 +12,9 @@ interface EpochDao {
     @Query("SELECT * FROM epoch_records ORDER BY timestampMillis DESC LIMIT :limit")
     fun getRecentEpochs(limit: Int = 100): Flow<List<EpochEntity>>
 
+    @Query("SELECT * FROM epoch_records ORDER BY timestampMillis DESC LIMIT :limit")
+    suspend fun getRecentEpochsList(limit: Int = 100): List<EpochEntity>
+
     @Query("SELECT * FROM epoch_records WHERE timestampMillis BETWEEN :start AND :end ORDER BY timestampMillis ASC")
     suspend fun getEpochsBetween(start: Long, end: Long): List<EpochEntity>
 

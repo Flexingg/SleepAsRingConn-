@@ -31,10 +31,9 @@ It decodes all biometric telemetry on-device without cloud dependencies, writes 
   - `StepsRecord` (Aggregated 15-minute step buckets)
   - `SleepSessionRecord` (Complete sleep sessions with staged hypnograms: Awake, Light, Deep, REM)
 - **🌙 Sleep as Android DIY Wearable Bridge**:
-  - Responds to `com.urbandroid.sleep.watch.CHECK_CONNECTED` with `CONFIRM_CONNECTED`.
-  - Dispatches aggregated movement batches (`com.urbandroid.sleep.watch.DATA_UPDATE` with `MAX_RAW_DATA`).
-  - Dispatches heart rate updates (`com.urbandroid.sleep.watch.HR_DATA_UPDATE`).
-  - Dispatches live SpO₂, Respiration Rate, and HRV via `com.urbandroid.sleep.ACTION_EXTRA_DATA_UPDATE`.
+  - Responds to `com.urbandroid.sleep.watch.CHECK_CONNECTED` with `CONFIRM_CONNECTED` (and reconnects the ring if it is asked while disconnected).
+  - Rebuilds a continuous 10-second actigraph (`DATA_UPDATE` / `MAX_RAW_DATA`) from the ring's 30-second motion counts. See [How the Sleep as Android stream works](#-how-the-sleep-as-android-stream-works).
+  - Sends live heart rate every 10 s (`HR_DATA_UPDATE`), and backfills HR, HRV and SpO₂ from history epochs with their real timestamps (`ACTION_EXTRA_DATA_UPDATE`).
   - Flashes the ring's locator LED upon receiving `HINT` broadcasts (anti-snore cues & lucid dreaming prompts).
 - **💓 Continuous Live Pulse & Vitals**:
   - Real-time optical sampling with keepalive polling for continuous Heart Rate, SpO₂, Skin Temperature, and Steps.
@@ -98,9 +97,23 @@ To use your RingConn Gen 2 with **Sleep as Android**:
    - Tap **Sleep tracking** → select **"Gear, Galaxy Gear, DIY or other"**.
    - Scroll down to **Wearable integration (DIY)**.
    - Tap **Custom package name** → paste `com.randallengineering.sleepasringconn` → tap **OK**.
-3. Tap **Test sensor** in Sleep as Android:
-   - The test sensor screen will connect immediately and graph live movement and Heart Rate.
-4. When you start sleep tracking in Sleep as Android, the app will automatically stream movement batches, Heart Rate, SpO₂, and Respiration Rate throughout the night.
+3. In the same wearable settings, enable **heart rate** (and **SpO₂** if you want it). Sleep as Android only asks for what is enabled there.
+4. Start sleep tracking. Movement appears in the graph about 2-4 minutes behind real time (see below), so **Test sensor** stays flat for the first few minutes.
+
+### 🔬 How the Sleep as Android stream works
+
+The RingConn Gen 2 has no live accelerometer stream. Its only motion data is five 30-second activity counts inside each 2.5-minute history epoch (`0x4C`). Sleep as Android, meanwhile, appends every `DATA_UPDATE` value as the next 10-second slot, with no timestamps. Earlier versions sent "whatever arrived in the last 10 s", which was almost always nothing, so the actigraph came out flat.
+
+What the bridge does now:
+
+- **Drains the sleep channel every 90 s while tracking**, so new epochs arrive within a few minutes. Each page is saved to the database before it is acknowledged, because the acknowledgement deletes it from the ring.
+- **Plays the motion back on a wall-clock timeline** (`ActigraphTimeline`). Each 30-second count, minus the ring's resting floor, fills its three 10-second slots. Exactly one value is sent per 10 s of real time, so the graph stays aligned and continuous. It is shifted only by the ring's 2-4 minute reporting delay.
+- **Never sends 0.0**: when a batch starts with a non-zero value, Sleep as Android drops every zero in it, which used to compress the timeline.
+- **Keeps the stream alive through gaps**: if the ring goes quiet, neutral values are sent once the gap is 6 minutes old, so Sleep as Android's 4-minute "no data, restart tracking" timer never fires mid-gap. A repeated `START_TRACKING` no longer resets anything.
+- **Corrects the ring clock**: record counters are documented with two anchors 4 h apart, so the first drain checks the newest record against the phone clock and corrects whole-hour offsets.
+- **Heart rate**: live HR runs all night with a watchdog that re-enters live mode if the ring stops answering. Any 2.5-minute stretch that live HR missed is backfilled from the epoch's HR at its real timestamp.
+
+The Integrations tab shows what has been sent and how far behind the actigraph is.
 
 ---
 
@@ -178,7 +191,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 🤝 Acknowledgments
 
-- Reverse-engineering research and insights from the [OpenCircuit](https://github.com/OpenCircuit) project.
+- Reverse-engineering research and insights from the [OpenCircuit](https://github.com/perezjuanj/OpenCircuit) project.
+- Connection and sync patterns informed by [RingLink](https://github.com/zazaulola/ringlink) and [RingConn-Gen-2-Android](https://github.com/Arkabas/RingConn-Gen-2-Android) (serialised GATT writes, bonding, destructive-ACK handling, the 4-hour counter anchor).
+- Sleep as Android intent handling checked against [Gadgetbridge](https://codeberg.org/Freeyourgadget/Gadgetbridge)'s `SleepAsAndroidSender` and the official [wearable API docs](https://sleep.urbandroid.org/docs/devs/wearable_api.html).
 - [Sleep as Android](https://sleep.urbandroid.org) for their open Wearable Integration API.
 - [Google Health Connect](https://developer.android.com/guide/health-and-fitness/health-connect) for on-device health data standardization.
 

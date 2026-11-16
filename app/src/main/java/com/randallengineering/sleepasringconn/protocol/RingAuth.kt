@@ -58,4 +58,17 @@ object RingAuth {
         if (sysId.size > 6) return sysId.takeLast(6).toByteArray()
         return null
     }
+
+    /**
+     * MACs to try for the auth digest, best first. The advertised name ends in the last two MAC
+     * bytes ("RingConn Gen2-A1B2"), which picks between the link address and the Device
+     * Information System ID when they differ (random/resolvable addresses).
+     */
+    fun macCandidates(address: ByteArray?, systemId: ByteArray?, name: String?): List<ByteArray> {
+        val all = listOfNotNull(address, systemId).distinctBy { it.toList() }
+        val suffix = name?.substringAfterLast('-', "")?.uppercase().orEmpty()
+        if (suffix.length != 4) return all
+        val (match, rest) = all.partition { "%02X%02X".format(it[4], it[5]) == suffix }
+        return match + rest
+    }
 }

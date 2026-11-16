@@ -316,6 +316,18 @@ fun IntegrationsScreen() {
                         }
                     }
 
+                    val saaStats by SleepAsAndroidBridge.stats.collectAsState()
+                    if (saaStats.trackingSinceMs > 0L) {
+                        val lag = saaStats.actigraphLagSeconds?.let { "${it / 60}m ${it % 60}s behind" } ?: "waiting for first ring epoch"
+                        val offset = if (saaStats.clockOffsetHours != 0L) " · ring clock ${saaStats.clockOffsetHours}h corrected" else ""
+                        Text(
+                            text = "Sent: ${saaStats.movementValuesSent} movement slots · ${saaStats.hrValuesSent} live HR · " +
+                                "${saaStats.epochVitalsSent} epoch vitals\nActigraph $lag$offset",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     Text(
                         text = "Connect RingConn Gen 2 with Sleep as Android:",
                         style = MaterialTheme.typography.titleSmall,
@@ -330,7 +342,8 @@ fun IntegrationsScreen() {
                         Text("2. Set 'Sleep tracking' to 'Gear, Galaxy Gear, DIY or other'", style = MaterialTheme.typography.bodySmall)
                         Text("3. Scroll to 'Wearable integration (DIY)' → tap 'Custom package name'", style = MaterialTheme.typography.bodySmall)
                         Text("4. Paste the package name below and hit OK", style = MaterialTheme.typography.bodySmall)
-                        Text("5. Tap 'Test sensor' in SaA to verify real-time movement and HR telemetry!", style = MaterialTheme.typography.bodySmall)
+                        Text("5. In SaA's wearable settings, enable heart rate (and SpO2 if wanted) so SaA requests them", style = MaterialTheme.typography.bodySmall)
+                        Text("Note: the ring only reports movement in 2.5-minute history blocks, so the actigraph runs ~2-4 minutes behind real time. 'Test sensor' will stay flat for the first few minutes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
 
                     // Package Name Card with Copy Button
