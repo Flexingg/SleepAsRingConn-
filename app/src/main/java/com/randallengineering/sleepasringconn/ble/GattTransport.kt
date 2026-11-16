@@ -201,6 +201,15 @@ class GattTransport(private val context: Context, val device: BluetoothDevice) {
         }.ok
     }
 
+    /** Which write types the ring's command characteristic advertises, for the log. */
+    fun writeModeDescription(): String {
+        val c = gatt?.getService(RingProtocol.DATA_SERVICE_UUID)?.getCharacteristic(RingProtocol.WRITE_CHAR_UUID)
+            ?: return "unknown"
+        val withResp = c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
+        val noResp = c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
+        return "supports${if (withResp) " write" else ""}${if (noResp) " write-no-response" else ""}; using ${if (withResp) "write" else "write-no-response"}"
+    }
+
     val isBonded: Boolean get() = device.bondState == BluetoothDevice.BOND_BONDED
 
     /**

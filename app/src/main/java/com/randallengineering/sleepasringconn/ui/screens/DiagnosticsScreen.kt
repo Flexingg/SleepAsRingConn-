@@ -160,7 +160,7 @@ fun DiagnosticsScreen() {
 
                 FilledTonalButton(
                     modifier = Modifier.weight(1f),
-                    onClick = { BleConnectionManager.syncHistory() },
+                    onClick = { BleConnectionManager.syncHistory(force = true) },
                     enabled = isConnected,
                     shape = RoundedCornerShape(12.dp)
                 ) {
