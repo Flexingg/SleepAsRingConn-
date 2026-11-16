@@ -91,13 +91,27 @@ fun DashboardScreen(
         }
     }
 
-    // Auto-stream live telemetry and sync history whenever Dashboard is active and ring is connected
+    // Live telemetry only while the Dashboard is actually on screen. Live mode keeps the ring's
+    // optical sensor busy, which stops it recording its own HR / HRV / SpO2 epochs.
     LaunchedEffect(isConnected) {
-        if (isConnected) {
-            if (!BleConnectionManager.isSyncing.value) {
-                BleConnectionManager.syncHistory()
+        if (isConnected && !BleConnectionManager.isSyncing.value) {
+            BleConnectionManager.syncHistory()
+        }
+    }
+    @Suppress("DEPRECATION")
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> BleConnectionManager.startLiveMonitoring(hrMode = true, owner = "dashboard")
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> BleConnectionManager.stopLiveMonitoring(owner = "dashboard")
+                else -> Unit
             }
-            BleConnectionManager.startLiveMonitoring(hrMode = true)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            BleConnectionManager.stopLiveMonitoring(owner = "dashboard")
         }
     }
 

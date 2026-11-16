@@ -58,9 +58,8 @@ class HrBroadcastService : Service() {
 
         // 2. Activate Live Real-Time PPG on the Ring
         serviceScope.launch {
-            if (BleConnectionManager.isConnected.value && !BleConnectionManager.isLiveMonitoring.value) {
-                BleConnectionManager.startLiveMonitoring(hrMode = true)
-            }
+            // Registers the request; it takes effect as soon as the ring is connected.
+            BleConnectionManager.startLiveMonitoring(hrMode = true, owner = "hr_broadcast")
         }
 
         // 3. Listen for live HR readings from the ring and forward to Peloton via GATT Server
@@ -99,9 +98,7 @@ class HrBroadcastService : Service() {
         super.onDestroy()
         serviceScope.cancel()
         HrBroadcastManager.stopBroadcast()
-        if (BleConnectionManager.isLiveMonitoring.value) {
-            BleConnectionManager.stopLiveMonitoring()
-        }
+        BleConnectionManager.stopLiveMonitoring(owner = "hr_broadcast")
     }
 
     private fun createNotificationChannel() {

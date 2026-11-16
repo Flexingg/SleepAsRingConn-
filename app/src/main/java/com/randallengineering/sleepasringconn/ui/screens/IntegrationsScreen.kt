@@ -316,6 +316,27 @@ fun IntegrationsScreen() {
                         }
                     }
 
+                    val liveHrDuringTracking by com.randallengineering.sleepasringconn.ble.BleConnectionManager.liveHrDuringTracking.collectAsState()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Live HR during sleep tracking", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            Text(
+                                if (liveHrDuringTracking) "HR every 10 s. The ring records no HRV or SpO2 while its sensor is in live mode."
+                                else "HR, HRV and SpO2 from the ring's own 2.5-minute readings (recommended).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = liveHrDuringTracking,
+                            onCheckedChange = { com.randallengineering.sleepasringconn.ble.BleConnectionManager.setLiveHrDuringTracking(it) }
+                        )
+                    }
+
                     val saaStats by SleepAsAndroidBridge.stats.collectAsState()
                     if (saaStats.trackingSinceMs > 0L) {
                         val lag = saaStats.actigraphLagSeconds?.let { "${it / 60}m ${it % 60}s behind" } ?: "waiting for first ring epoch"
