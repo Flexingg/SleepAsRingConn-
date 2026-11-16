@@ -98,7 +98,7 @@ To use your RingConn Gen 2 with **Sleep as Android**:
    - Scroll down to **Wearable integration (DIY)**.
    - Tap **Custom package name** → paste `com.randallengineering.sleepasringconn` → tap **OK**.
 3. In the same wearable settings, enable **heart rate** (and **SpO₂** if you want it). Sleep as Android only asks for what is enabled there.
-4. Start sleep tracking. Movement appears in the graph about 2-4 minutes behind real time (see below), so **Test sensor** stays flat for the first few minutes.
+4. Start sleep tracking. Movement appears in the graph about 2-3 minutes after it happens (see below). **Test sensor** starts with the last few minutes of ring history and only graphs movement; heart rate shows up in a real tracking session.
 
 ### 🔬 How the Sleep as Android stream works
 

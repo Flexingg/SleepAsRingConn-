@@ -364,7 +364,7 @@ fun IntegrationsScreen() {
                         Text("3. Scroll to 'Wearable integration (DIY)' → tap 'Custom package name'", style = MaterialTheme.typography.bodySmall)
                         Text("4. Paste the package name below and hit OK", style = MaterialTheme.typography.bodySmall)
                         Text("5. In SaA's wearable settings, enable heart rate (and SpO2 if wanted) so SaA requests them", style = MaterialTheme.typography.bodySmall)
-                        Text("Note: the ring only reports movement in 2.5-minute history blocks, so the actigraph runs ~2-4 minutes behind real time. 'Test sensor' will stay flat for the first few minutes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Note: the ring only reports movement in 2.5-minute history blocks, so movement shows up in SaA ~2-3 minutes after it happens ('Test sensor' starts with the last few minutes of history). SaA's 'Test sensor' screen only graphs movement; heart rate appears in a real tracking session.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
 
                     // Package Name Card with Copy Button

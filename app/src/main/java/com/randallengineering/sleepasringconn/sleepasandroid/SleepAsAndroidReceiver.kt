@@ -17,6 +17,7 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "SleepAsAndroidReceiver"
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        @Volatile private var lastCheckLogAt = 0L
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -28,7 +29,14 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
             SleepAsAndroidBridge.ACTION_CHECK_CONNECTED -> {
                 // SaA repeats this every 5 s for up to 2 min, so a ring that is reconnecting now
                 // gets confirmed on a later check instead of SaA falling back to phone sensors.
-                if (BleConnectionManager.isReady.value) {
+                val ready = BleConnectionManager.isReady.value
+                if (System.currentTimeMillis() - lastCheckLogAt > 30_000L) {
+                    lastCheckLogAt = System.currentTimeMillis()
+                    BleConnectionManager.logEvent(
+                        if (ready) "SaA: CHECK_CONNECTED -> confirmed" else "SaA: CHECK_CONNECTED -> ring not ready, reconnecting"
+                    )
+                }
+                if (ready) {
                     SleepAsAndroidBridge.sendConfirmConnected(app)
                 } else {
                     startServiceSafely(app)

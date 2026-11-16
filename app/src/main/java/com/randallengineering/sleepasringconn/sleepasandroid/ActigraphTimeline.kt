@@ -47,9 +47,14 @@ class ActigraphTimeline(
     /** Wall time (ms) up to which the ring has delivered motion; 0 before the first epoch. */
     val coveredUntil: Long get() = coveredUntilMs
 
+    /**
+     * Starts the playout [leadMs] in the past, so motion the ring already reported for the last
+     * few minutes plays out at once instead of the graph staying empty until the next epoch.
+     */
     @Synchronized
-    fun start(nowMs: Long) {
-        cursorMs = nowMs - nowMs % slotMs
+    fun start(nowMs: Long, leadMs: Long = 0L) {
+        val from = nowMs - leadMs
+        cursorMs = from - from % slotMs
         bins.clear()
         seenCounters.clear()
         coveredUntilMs = 0L
@@ -72,9 +77,10 @@ class ActigraphTimeline(
      * charger) carry no motion and are left as gaps.
      */
     @Synchronized
-    fun ingest(records: List<BulkRecord>, nowMs: Long) {
+    fun ingest(records: List<BulkRecord>, nowMs: Long, allowCalibration: Boolean = true) {
         if (records.isEmpty()) return
-        calibrate(records, nowMs)
+        // Only a live drain reaches "now"; stored history may be hours old and would fake an offset.
+        if (allowCalibration) calibrate(records, nowMs)
         for (r in records.sortedBy { it.counter }) {
             if (!seenCounters.add(r.counter)) continue
             val start = wallTimeOf(r)
@@ -136,7 +142,8 @@ class ActigraphTimeline(
         if (abs(residual) > 7 * HOUR_MS) return
         calibrated = true
         val hours = (residual.toDouble() / HOUR_MS).roundToLong()
-        if (hours != 0L && abs(residual - hours * HOUR_MS) < 20 * 60_000L) {
+        // Only the documented anchor difference (4 h) is corrected; anything else is left alone.
+        if (abs(hours) == 4L && abs(residual - hours * HOUR_MS) < 20 * 60_000L) {
             clockOffsetMs = hours * HOUR_MS
         }
     }

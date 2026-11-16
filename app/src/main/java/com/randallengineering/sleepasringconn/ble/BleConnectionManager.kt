@@ -75,6 +75,8 @@ object BleConnectionManager {
     private const val IDLE_FETCH_MS = 60_000L
     /** Sleep-channel drain cadence while Sleep as Android is tracking. */
     private const val TRACKING_DRAIN_MS = 90_000L
+    /** While SaA shows its live graph (it sets batch size 1), drain more often. */
+    private const val TRACKING_DRAIN_VISIBLE_MS = 30_000L
     /** Background full drain cadence otherwise. */
     private const val BACKGROUND_DRAIN_MS = 30 * 60_000L
 
@@ -143,6 +145,7 @@ object BleConnectionManager {
     @Volatile private var liveSpo2Mode = false
     @Volatile private var sleepTracking = false
     @Volatile private var fullSyncRequested = true
+    @Volatile private var quickDrainRequested = false
     @Volatile private var spo2Request: CompletableDeferred<Int?>? = null
 
     // Auth handshake hand-off from the dispatcher.
@@ -190,6 +193,9 @@ object BleConnectionManager {
             }
         }
     }
+
+    /** Lets other components (e.g. the Sleep as Android bridge) write to the Diagnostics log. */
+    fun logEvent(msg: String) = log(msg)
 
     private fun log(msg: String) {
         Log.i(TAG, msg)
@@ -516,9 +522,11 @@ object BleConnectionManager {
             // 1. History drains: requested, periodic, or the frequent sleep-channel drain that
             //    feeds the Sleep as Android actigraph.
             val fullDue = fullSyncRequested || now - lastFullDrain >= BACKGROUND_DRAIN_MS
-            val trackingDue = sleepTracking && now - lastDrain >= TRACKING_DRAIN_MS
+            val drainEvery = if (SleepAsAndroidBridge.batchSize <= 1) TRACKING_DRAIN_VISIBLE_MS else TRACKING_DRAIN_MS
+            val trackingDue = sleepTracking && (quickDrainRequested || now - lastDrain >= drainEvery)
             if (fullDue || trackingDue) {
                 fullSyncRequested = false
+                quickDrainRequested = false
                 // Live mode is not stopped for a drain: the old, working build never did, and
                 // `06 00 00` is inferred rather than captured. Polling simply pauses.
                 liveActive = false
@@ -918,7 +926,12 @@ object BleConnectionManager {
             else if (_liveHrDuringTracking.value) "Sleep tracking: live HR + 90 s history drains"
             else "Sleep tracking: 90 s history drains (HR/HRV/SpO2 from ring epochs)"
         )
-        if (enabled) ensureConnected() else syncHistory()
+        if (enabled) {
+            quickDrainRequested = true // get the newest epochs right away
+            ensureConnected()
+        } else {
+            syncHistory()
+        }
     }
 
     fun launchSpo2Measurement() {
