@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.PowerManager
 import android.util.Log
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
+import com.randallengineering.sleepasringconn.data.AppDatabase
 import com.randallengineering.sleepasringconn.protocol.BulkRecord
 import com.randallengineering.sleepasringconn.protocol.BulkRecordLayout
 import com.randallengineering.sleepasringconn.sensor.MotionSensorManager
@@ -84,6 +85,13 @@ object SleepAsAndroidBridge {
     /** A live HR reading older than this is not forwarded. */
     private const val LIVE_HR_FRESH_MS = 20_000L
     private const val EPOCH_MS = BulkRecord.EPOCH_SECONDS * 1000L
+    /**
+     * The actigraph starts this far in the past and is seeded from stored history, so SaA
+     * (and its sensor test) gets real values immediately instead of an empty graph while the
+     * first new ring epoch is still being recorded.
+     */
+    private const val START_LEAD_MS = 5 * 60_000L
+    private const val SUMMARY_LOG_MS = 5 * 60_000L
 
     @Volatile var isTrackingActive = false
         private set
@@ -121,6 +129,11 @@ object SleepAsAndroidBridge {
     @Volatile private var latestLiveHrAt = 0L
     private var trackingStartMs = 0L
     private var tickerJob: Job? = null
+    private var lastSummaryLogAt = 0L
+    private var summaryMovement = 0
+    private var summaryMax = 0f
+    private var summaryHr = 0
+    private var summaryEpochVitals = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private var appContext: Context? = null
 
@@ -137,6 +150,7 @@ object SleepAsAndroidBridge {
         isOximeterMonitoringRequested = doOximeter
         if (isTrackingActive) {
             Log.i(TAG, "START_TRACKING repeated (HR=$doHr SpO2=$doOximeter); stream continues.")
+            BleConnectionManager.logEvent("SaA: START_TRACKING repeated; stream continues")
             BleConnectionManager.setSleepTracking(true)
             return
         }
@@ -144,12 +158,19 @@ object SleepAsAndroidBridge {
         isSuspended = false
         val now = System.currentTimeMillis()
         trackingStartMs = now
-        timeline.start(now)
+        timeline.start(now, leadMs = START_LEAD_MS)
         synchronized(pendingMovement) { pendingMovement.clear() }
+        seedFromHistory(context.applicationContext, now)
+        lastSummaryLogAt = now
+        summaryMovement = 0; summaryMax = 0f; summaryHr = 0; summaryEpochVitals = 0
         sentEpochCounters.clear()
         liveHrSentAt.clear()
         _stats.value = Stats(trackingSinceMs = now, clockOffsetHours = timeline.clockOffsetMs / 3_600_000L)
         Log.i(TAG, "Tracking started. HR=$doHr SpO2=$doOximeter batch=$batchSize")
+        BleConnectionManager.logEvent(
+            "SaA: START_TRACKING (HR ${if (doHr) "requested" else "not requested"}, " +
+                "SpO2 ${if (doOximeter) "requested" else "not requested"})"
+        )
 
         acquireWakeLock(context)
         MotionSensorManager.getInstance(context).start()
@@ -178,10 +199,18 @@ object SleepAsAndroidBridge {
         releaseWakeLock()
         BleConnectionManager.setSleepTracking(false)
         Log.i(TAG, "Tracking stopped; full history sync requested.")
+        BleConnectionManager.logEvent("SaA: STOP_TRACKING (sent ${_stats.value.movementValuesSent} movement values, " +
+            "${_stats.value.hrValuesSent} live HR, ${_stats.value.epochVitalsSent} epoch vitals)")
     }
 
     fun handleSetBatchSize(size: Long) {
-        batchSize = size.toInt().coerceIn(1, 360)
+        val newSize = size.toInt().coerceIn(1, 360)
+        if (newSize != batchSize) {
+            BleConnectionManager.logEvent(
+                "SaA: batch size $newSize${if (newSize == 1) " (SaA graph on screen: values sent one by one)" else ""}"
+            )
+        }
+        batchSize = newSize
         Log.i(TAG, "Batch size: $batchSize")
     }
 
@@ -226,10 +255,25 @@ object SleepAsAndroidBridge {
                 r.spo2Percent?.let { sendSingleExtra(ctx, EXTRA_DATA_SPO2, it.toFloat(), mid); sent++ }
             }
         }
+        summaryEpochVitals += sent
         _stats.value = _stats.value.copy(
             epochVitalsSent = _stats.value.epochVitalsSent + sent,
             clockOffsetHours = timeline.clockOffsetMs / 3_600_000L,
         )
+    }
+
+    /** Feeds the last 30 min of stored epochs into the timeline (floor warm-up + start lead). */
+    private fun seedFromHistory(context: Context, now: Long) {
+        scope.launch {
+            try {
+                val stored = AppDatabase.getDatabase(context).epochDao().getEpochsSince(now - 30 * 60_000L)
+                val records = stored.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
+                timeline.ingest(records, now, allowCalibration = false)
+                BleConnectionManager.logEvent("SaA: seeded actigraph with ${records.size} recent epochs")
+            } catch (e: Exception) {
+                Log.w(TAG, "Seeding from history failed", e)
+            }
+        }
     }
 
     private fun liveHrCovered(fromMs: Long, toMs: Long): Boolean =
@@ -266,6 +310,10 @@ object SleepAsAndroidBridge {
             }
         }
         for (b in batches) sendMovementData(ctx, b)
+        for (b in batches) {
+            summaryMovement += b.size
+            summaryMax = maxOf(summaryMax, b.maxOrNull() ?: 0f)
+        }
 
         // Heart rate: one fresh live value per 10 s slot, which is exactly how SaA spaces them.
         val hr = latestLiveHr
@@ -276,6 +324,17 @@ object SleepAsAndroidBridge {
                 while (liveHrSentAt.size > 1000) liveHrSentAt.removeFirst()
             }
             _stats.value = _stats.value.copy(hrValuesSent = _stats.value.hrValuesSent + 1)
+            summaryHr++
+        }
+
+        if (now - lastSummaryLogAt >= SUMMARY_LOG_MS || (lastSummaryLogAt == trackingStartMs && summaryMovement > 0)) {
+            val lag = timeline.coveredUntil.takeIf { it > 0 }?.let { "${(now - it) / 1000}s" } ?: "no ring data yet"
+            BleConnectionManager.logEvent(
+                "SaA: sent $summaryMovement movement values (max ${"%.2f".format(summaryMax)}), $summaryHr live HR, " +
+                    "$summaryEpochVitals epoch vitals; ring data lag $lag"
+            )
+            lastSummaryLogAt = now
+            summaryMovement = 0; summaryMax = 0f; summaryHr = 0; summaryEpochVitals = 0
         }
 
         val covered = timeline.coveredUntil

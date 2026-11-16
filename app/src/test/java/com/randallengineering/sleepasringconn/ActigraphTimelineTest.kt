@@ -118,6 +118,38 @@ class ActigraphTimelineTest {
     }
 
     @Test
+    fun startLeadPlaysRecentHistoryImmediately() {
+        val now = aligned(System.currentTimeMillis() - 600_000L)
+        val tl = ActigraphTimeline()
+        tl.start(now, leadMs = 5 * 60_000L)
+        // History already stored before tracking started covers the last 5 minutes.
+        val stored = (-2 until 0).map { epoch(now + it * epochMs, intArrayOf(1, 1, 31, 1, 1)) }
+        tl.ingest(stored, now, allowCalibration = false)
+        val out = tl.drain(now)
+        assertEquals("5 min of slots right away", 30, out.size)
+        assertTrue("real movement is in there", out.any { it > ActigraphTimeline.STILL_VALUE })
+    }
+
+    @Test
+    fun seededHistoryNeverCalibratesTheClock() {
+        val now = aligned(System.currentTimeMillis() - 600_000L)
+        val tl = ActigraphTimeline()
+        tl.start(now)
+        tl.ingest(listOf(epoch(now - 4 * 3_600_000L - epochMs, intArrayOf(1, 1, 1, 1, 1))), now, allowCalibration = false)
+        assertEquals(0L, tl.clockOffsetMs)
+    }
+
+    @Test
+    fun onlyTheDocumentedFourHourOffsetIsCorrected() {
+        val now = aligned(System.currentTimeMillis() - 600_000L)
+        val tl = ActigraphTimeline()
+        tl.start(now)
+        // Stale data ~2 h old must not be mistaken for a clock offset.
+        tl.ingest(listOf(epoch(now - 2 * 3_600_000L - epochMs, intArrayOf(1, 1, 1, 1, 1))), now)
+        assertEquals(0L, tl.clockOffsetMs)
+    }
+
+    @Test
     fun saaValuesArePositiveAndMonotonic() {
         assertTrue(ActigraphTimeline.toSaaValue(0) > 0f)
         assertTrue(ActigraphTimeline.toSaaValue(1) > ActigraphTimeline.toSaaValue(0))

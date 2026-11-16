@@ -105,13 +105,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Merge PR
+        id: merge
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Someone may have merged or closed it by hand while the build ran; that is fine.
+          state=$(gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json state --jq .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "PR is already $state; nothing to merge."
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} \
             --merge --match-head-commit ${{ github.event.pull_request.head.sha }}
+          echo "merged=true" >> "$GITHUB_OUTPUT"
 
+      # A manual merge triggers release.yml through its push trigger; only a merge made here
+      # (with GITHUB_TOKEN, which does not trigger push workflows) needs the dispatch.
       - name: Start release build
+        if: steps.merge.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run release.yml --repo ${{ github.repository }} --ref main
