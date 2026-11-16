@@ -164,6 +164,12 @@ SleepAsRingConn/
 
 ---
 
+## 📦 Getting Builds
+
+- **Every pull request**: the *PR Build & Auto-merge* workflow runs the unit tests, builds the APK, and comments on the PR with a download link. Once the PR is marked **Ready for review** and the build passes, it is merged automatically. Drafts are never auto-merged.
+- **Every merge to `main`**: the *Build & Release APK* workflow publishes a GitHub Release (`build-N`) with the APK attached. Grab it from **Releases → Latest**.
+- All builds are signed with the same key (`app/signing/sideload.keystore`) and carry an increasing versionCode, so each new APK installs over the previous one and keeps your data. The key is for sideloading; its password is in `app/build.gradle.kts` and is not a secret.
+
 ## 💻 Building from Source
 
 ### Prerequisites

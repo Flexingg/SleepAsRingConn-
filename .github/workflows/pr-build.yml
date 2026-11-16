@@ -1,0 +1,117 @@
+name: PR Build & Auto-merge
+
+# For every pull request into main:
+#   1. run the unit tests and build the APK,
+#   2. attach the APK to the run and post/refresh a download link on the PR,
+#   3. once the PR is marked "Ready for review" (not a draft) and the build passed, merge it and
+#      kick off the release build (a merge made with GITHUB_TOKEN does not trigger push workflows
+#      by itself, but a workflow_dispatch does).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test & build APK
+    runs-on: ubuntu-latest
+    outputs:
+      apk_url: ${{ steps.upload.outputs.artifact-url }}
+      apk_name: ${{ steps.name.outputs.apk_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Unit tests
+        run: chmod +x gradlew && ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build APK
+        run: ./gradlew --no-daemon assembleRelease -PciVersionCode=$((1000 + ${{ github.run_number }}))
+
+      - name: Name APK
+        id: name
+        run: |
+          version=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          apk="SleepAsRingConn-v${version}-pr${{ github.event.pull_request.number }}-run${{ github.run_number }}.apk"
+          mv app/build/outputs/apk/release/*.apk "$apk"
+          echo "apk_name=$apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.apk_name }}
+          path: ${{ steps.name.outputs.apk_name }}
+          retention-days: 30
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-pr${{ github.event.pull_request.number }}
+          path: app/build/reports/tests/
+          retention-days: 7
+
+  comment:
+    name: Post APK link
+    needs: build
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          APK_URL: ${{ needs.build.outputs.apk_url }}
+          APK_NAME: ${{ needs.build.outputs.apk_name }}
+        with:
+          script: |
+            const marker = '<!-- pr-apk-build -->';
+            const body = `${marker}\n### 📦 Test APK\n` +
+              `[**${process.env.APK_NAME}**](${process.env.APK_URL}) (zip, built from ${context.payload.pull_request.head.sha.slice(0, 7)})\n\n` +
+              `Download, unzip, and install over the current app. Unit tests passed.\n` +
+              (context.payload.pull_request.draft
+                ? `_This PR is a draft; mark it **Ready for review** to auto-merge and publish a release._`
+                : `_Auto-merging into main and publishing a release._`);
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  automerge:
+    name: Auto-merge
+    needs: build
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} \
+            --merge --match-head-commit ${{ github.event.pull_request.head.sha }}
+
+      - name: Start release build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release.yml --repo ${{ github.repository }} --ref main

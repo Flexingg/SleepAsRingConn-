@@ -13,7 +13,8 @@ android {
         applicationId = "com.randallengineering.sleepasringconn"
         minSdk = 28
         targetSdk = 35
-        versionCode = 10
+        // CI passes -PciVersionCode=<run number based> so every build installs as an update.
+        versionCode = (project.findProperty("ciVersionCode") as String?)?.toIntOrNull() ?: 10
         versionName = "1.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -22,10 +23,22 @@ android {
         }
     }
 
+    signingConfigs {
+        // One fixed key for every build (local and CI), so a new APK installs over the old one
+        // instead of failing with "App not installed". The per-machine debug key changed on
+        // every CI run. This key is for sideloading only; its password is not a secret.
+        create("sideload") {
+            storeFile = file("signing/sideload.keystore")
+            storePassword = "android"
+            keyAlias = "sideload"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("sideload")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -33,6 +46,7 @@ android {
         }
         debug {
             applicationIdSuffix = ""
+            signingConfig = signingConfigs.getByName("sideload")
         }
     }
 
