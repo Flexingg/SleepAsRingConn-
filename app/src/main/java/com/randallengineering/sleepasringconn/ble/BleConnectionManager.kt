@@ -136,6 +136,8 @@ object BleConnectionManager {
 
     // History drain hand-off from the dispatcher.
     @Volatile private var syncInbox: Channel<ByteArray>? = null
+    /** History pages the ring pushes outside a drain (e.g. in live mode); saved, then acked. */
+    @Volatile private var strayPages: Channel<ByteArray>? = null
 
     private val liveSettler = LiveHrSettler()
     @Volatile private var lastLiveFrameAt = 0L
@@ -360,6 +362,30 @@ object BleConnectionManager {
                 }
             }
             val writer = scope.launch { for (cmd in queue) send(t, cmd) }
+            val stray = Channel<ByteArray>(Channel.UNLIMITED)
+            strayPages = stray
+            val strayWorker = scope.launch {
+                // The ring pushes pages during live mode and waits for each ACK; leaving them
+                // unacknowledged stalls its live measurement. Save first, then ACK.
+                for (f in stray) {
+                    try {
+                        when (f[0].toInt() and 0xFF) {
+                            0x4C -> {
+                                val records = BulkRecord.parsePage(f)
+                                if (records.isNotEmpty()) {
+                                    persistEpochs(records, RingProtocol.CHANNEL_SLEEP.toInt())
+                                    onEpochsPersisted(records)
+                                }
+                                send(t, RingProtocol.CMD_PAGE_ACK_4C)
+                            }
+                            0x47 -> send(t, RingProtocol.CMD_PAGE_ACK_47)
+                            0x4D -> send(t, RingProtocol.CMD_PAGE_ACK_4D)
+                        }
+                    } catch (e: Exception) {
+                        log("Stray page handling failed: ${e.javaClass.simpleName} ${e.message}")
+                    }
+                }
+            }
 
             try {
                 _connectionState.value = "Connected & Authenticating"
@@ -377,6 +403,9 @@ object BleConnectionManager {
             } finally {
                 dispatcher.cancel()
                 writer.cancel()
+                strayWorker.cancel()
+                stray.close()
+                strayPages = null
             }
             return reachedReady
         } finally {
@@ -720,9 +749,12 @@ object BleConnectionManager {
                 syncInbox?.trySend(f)
             }
             0x82, 0x4C, 0x47, 0x4D, 0x50 -> {
-                // Outside a drain, pages are left un-acked: the ring re-sends them on the next
-                // drain, whereas acking an unsaved page would delete it.
-                syncInbox?.trySend(f) ?: Log.d(TAG, "Ignoring 0x%02X outside a drain".format(op))
+                val inbox = syncInbox
+                when {
+                    inbox != null -> inbox.trySend(f)
+                    op == 0x4C || op == 0x47 || op == 0x4D -> strayPages?.trySend(f)
+                    else -> Log.d(TAG, "Ignoring 0x%02X outside a drain".format(op))
+                }
             }
             0x15 -> onLiveSample(f)
             0x4E -> {
@@ -775,7 +807,8 @@ object BleConnectionManager {
         if (System.currentTimeMillis() - lastStatusLogAt >= 5 * 60_000L) {
             lastStatusLogAt = System.currentTimeMillis()
             val temp = status.skinTemperature?.let { "%.1f°C".format(it.celsius) } ?: "n/a"
-            log("Ring status: battery ${status.batteryPercent}%, skin $temp, state 0x%02X, steps ${status.quarterHourSteps}".format(status.stateByte))
+            val state = "%02X".format(status.stateByte)
+            log("Ring status: battery ${status.batteryPercent}%, skin $temp, state 0x$state, steps ${status.quarterHourSteps}")
         }
         val ctx = appContext ?: return
         val prev = lastReportedRingSteps
