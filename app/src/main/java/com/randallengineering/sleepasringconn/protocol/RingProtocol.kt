@@ -25,6 +25,8 @@ object RingProtocol {
     val CMD_STATUS_QUERY = byteArrayOf(0xD0.toByte(), 0x00, 0x00)
     val CMD_LIVE_HR_MODE = byteArrayOf(0x06, 0x01, 0x00)
     val CMD_LIVE_SPO2_MODE = byteArrayOf(0x06, 0x02, 0x00)
+    /** Leaves any live measurement mode (`06 00 00`). Best-effort; the ring also times out on its own. */
+    val CMD_LIVE_STOP = byteArrayOf(0x06, 0x00, 0x00)
     val CMD_FETCH = byteArrayOf(0x07, 0x00, 0x00)
     val CMD_POLL = byteArrayOf(0x95.toByte(), 0x00, 0x00)
     val CMD_PAGE_ACK_47 = byteArrayOf(0xC7.toByte(), 0x00, 0x00)
@@ -73,8 +75,15 @@ object RingProtocol {
         return createSyncSinceCommand(startSec, channel)
     }
 
+    /**
+     * `02 00 <cursor> <ch> 01 00` meaning "drain the un-synced backlog up to about now".
+     *
+     * The cursor is an upper bound, not a start point: the ring keeps its own resume pointer per
+     * channel. The vendor app, OpenCircuit and RingLink all send "now" here. An earlier build sent
+     * "now - 14 days", which asks for nothing newer than two weeks ago.
+     */
     fun createSyncUpToNowCommand(channel: Byte = CHANNEL_SLEEP): ByteArray {
-        return createSyncSinceLastEpochCommand(null, channel)
+        return createSyncSinceCommand(System.currentTimeMillis() / 1000, channel)
     }
 
     /**
