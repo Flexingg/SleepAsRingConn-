@@ -111,7 +111,7 @@ What the bridge does now:
 - **Never sends 0.0**: when a batch starts with a non-zero value, Sleep as Android drops every zero in it, which used to compress the timeline.
 - **Keeps the stream alive through gaps**: if the ring goes quiet, neutral values are sent once the gap is 6 minutes old, so Sleep as Android's 4-minute "no data, restart tracking" timer never fires mid-gap. A repeated `START_TRACKING` no longer resets anything.
 - **Corrects the ring clock**: record counters are documented with two anchors 4 h apart, so the first drain checks the newest record against the phone clock and corrects whole-hour offsets.
-- **Heart rate**: live HR runs all night with a watchdog that re-enters live mode if the ring stops answering. Any 2.5-minute stretch that live HR missed is backfilled from the epoch's HR at its real timestamp.
+- **Heart rate, HRV, SpO₂**: by default these come from the ring's own 2.5-minute readings and are sent with their real timestamps. On FR02.018, continuous live mode keeps the optical sensor busy, and the ring then records no HR, HRV or SpO₂ in its epochs. Live HR every 10 s during tracking is an opt-in switch on the Integrations tab. The Dashboard runs live mode only while it is on screen.
 
 The Integrations tab shows what has been sent and how far behind the actigraph is.
 
@@ -163,6 +163,12 @@ SleepAsRingConn/
 ```
 
 ---
+
+## 📦 Getting Builds
+
+- **Every pull request**: the *PR Build & Auto-merge* workflow runs the unit tests, builds the APK, and comments on the PR with a download link. Once the PR is marked **Ready for review** and the build passes, it is merged automatically. Drafts are never auto-merged.
+- **Every merge to `main`**: the *Build & Release APK* workflow publishes a GitHub Release (`build-N`) with the APK attached. Grab it from **Releases → Latest**.
+- All builds are signed with the same key (`app/signing/sideload.keystore`) and carry an increasing versionCode, so each new APK installs over the previous one and keeps your data. The key is for sideloading; its password is in `app/build.gradle.kts` and is not a secret.
 
 ## 💻 Building from Source
 

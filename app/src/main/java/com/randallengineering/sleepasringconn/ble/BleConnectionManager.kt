@@ -63,7 +63,14 @@ object BleConnectionManager {
     /** Ring answers a poll about every 2 s; polling faster resets its HR window. */
     private const val LIVE_POLL_MS = 2_000L
     /** No 0x15 frame for this long while live: the ring left live mode, re-enter it. */
-    private const val LIVE_WATCHDOG_MS = 20_000L
+    /**
+     * The ring ends a live session on its own after ~30-40 s (like the vendor's "measure now").
+     * Once it has been answering, 6 s of silence (3 missed polls) means the session is over.
+     */
+    private const val LIVE_STALL_MS = 6_000L
+    /** Grace after entering live mode before silence counts as a stall. */
+    private const val LIVE_ENTRY_GRACE_MS = 15_000L
+    private const val PREF_SAA_LIVE_HR = "saa_live_hr_during_tracking"
     private const val LIVE_HR_STALE_MS = 60_000L
     private const val IDLE_FETCH_MS = 60_000L
     /** Sleep-channel drain cadence while Sleep as Android is tracking. */
@@ -110,6 +117,14 @@ object BleConnectionManager {
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
+    /**
+     * Whether live HR runs during Sleep as Android tracking. Off by default: continuous live mode
+     * keeps the ring's optical sensor busy, and its own 2.5-minute epochs then carry no HR, HRV or
+     * SpO2 (seen on FR02.018: every epoch recorded during live mode was empty).
+     */
+    private val _liveHrDuringTracking = MutableStateFlow(false)
+    val liveHrDuringTracking: StateFlow<Boolean> = _liveHrDuringTracking.asStateFlow()
+
     private val _isRingLedOn = MutableStateFlow(false)
     val isRingLedOn: StateFlow<Boolean> = _isRingLedOn.asStateFlow()
 
@@ -147,6 +162,7 @@ object BleConnectionManager {
     @Volatile private var lastFullDrainAt = 0L
     private val rxCounts = IntArray(256)
     private var lastHrLogAt = 0L
+    private var lastWarmupLogAt = 0L
     private var lastStatusLogAt = 0L
     private var lastWriteFailLogAt = 0L
     private var descriptorRejectLogged = false
@@ -158,6 +174,8 @@ object BleConnectionManager {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         bluetoothAdapter = manager?.adapter
         registerBluetoothStateReceiver(context.applicationContext)
+        _liveHrDuringTracking.value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(PREF_SAA_LIVE_HR, false)
         ensureConnected()
 
         // Seed the dashboard with the latest stored vitals until live values arrive.
@@ -525,12 +543,12 @@ object BleConnectionManager {
             }
 
             // 3. Live measurement, with a watchdog that re-enters the mode if the ring goes quiet.
-            if (userLiveWanted || sleepTracking) {
+            if (liveWanted()) {
                 val wantSpo2 = liveSpo2Mode && !sleepTracking
-                val stalled = liveActive && now - liveEnteredAt > LIVE_WATCHDOG_MS &&
-                    now - lastLiveFrameAt > LIVE_WATCHDOG_MS
+                val stalled = liveActive && now - liveEnteredAt > LIVE_ENTRY_GRACE_MS &&
+                    now - lastLiveFrameAt > LIVE_STALL_MS
                 if (!liveActive || stalled || liveActiveSpo2 != wantSpo2) {
-                    if (stalled) log("Live stream stalled; re-entering live mode")
+                    if (stalled) Log.d(TAG, "Live session ended; starting a new one")
                     enterLive(t, if (wantSpo2) RingProtocol.CMD_LIVE_SPO2_MODE else RingProtocol.CMD_LIVE_HR_MODE)
                     liveActive = true
                     liveActiveSpo2 = wantSpo2
@@ -769,8 +787,8 @@ object BleConnectionManager {
     private fun onLiveSample(f: ByteArray) {
         lastLiveFrameAt = System.currentTimeMillis()
         LiveSample.parseHeartRate(f)?.let { onLockedHeartRate(it); return }
-        if (LiveSample.isWarmup(f) && System.currentTimeMillis() - lastHrLogAt >= 30_000L) {
-            lastHrLogAt = System.currentTimeMillis()
+        if (LiveSample.isWarmup(f) && System.currentTimeMillis() - lastWarmupLogAt >= 60_000L) {
+            lastWarmupLogAt = System.currentTimeMillis()
             log("Live HR warming up (sensor value ${f[2].toInt() and 0xFF})")
         }
         LiveSample.parseSpo2(f)?.let { spo2 ->
@@ -858,16 +876,32 @@ object BleConnectionManager {
         if (!_isConnected.value) ensureConnected()
     }
 
-    fun startLiveMonitoring(hrMode: Boolean = true) {
+    private fun liveWanted(): Boolean = userLiveWanted || (sleepTracking && _liveHrDuringTracking.value)
+
+    fun setLiveHrDuringTracking(enabled: Boolean) {
+        _liveHrDuringTracking.value = enabled
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()
+            ?.putBoolean(PREF_SAA_LIVE_HR, enabled)?.apply()
+        _isLiveMonitoring.value = liveWanted()
+        log("Live HR during sleep tracking: ${if (enabled) "on" else "off (epoch vitals only)"}")
+    }
+
+    /** Who currently wants live mode ("dashboard", "hr_broadcast", ...). */
+    private val liveOwners = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    fun startLiveMonitoring(hrMode: Boolean = true, owner: String = "ui") {
+        liveOwners.add(owner)
         userLiveWanted = true
         liveSpo2Mode = !hrMode
         _isLiveMonitoring.value = true
     }
 
-    fun stopLiveMonitoring() {
-        userLiveWanted = false
-        liveSpo2Mode = false
-        _isLiveMonitoring.value = sleepTracking
+    /** Withdraws [owner]'s request; live mode stops only when nobody else still wants it. */
+    fun stopLiveMonitoring(owner: String = "ui") {
+        liveOwners.remove(owner)
+        userLiveWanted = liveOwners.isNotEmpty()
+        if (!userLiveWanted) liveSpo2Mode = false
+        _isLiveMonitoring.value = liveWanted()
     }
 
     /**
@@ -878,8 +912,12 @@ object BleConnectionManager {
     fun setSleepTracking(enabled: Boolean) {
         if (sleepTracking == enabled) return
         sleepTracking = enabled
-        _isLiveMonitoring.value = enabled || userLiveWanted
-        log(if (enabled) "Sleep tracking: live HR + 90 s history drains" else "Sleep tracking ended: full drain")
+        _isLiveMonitoring.value = liveWanted()
+        log(
+            if (!enabled) "Sleep tracking ended: full drain"
+            else if (_liveHrDuringTracking.value) "Sleep tracking: live HR + 90 s history drains"
+            else "Sleep tracking: 90 s history drains (HR/HRV/SpO2 from ring epochs)"
+        )
         if (enabled) ensureConnected() else syncHistory()
     }
 
