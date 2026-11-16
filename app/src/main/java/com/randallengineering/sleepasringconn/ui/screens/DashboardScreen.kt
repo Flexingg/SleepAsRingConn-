@@ -569,7 +569,7 @@ fun DashboardScreen(
             ) {
                 Button(
                     modifier = Modifier.weight(1f),
-                    onClick = { BleConnectionManager.syncHistory() },
+                    onClick = { BleConnectionManager.syncHistory(force = true) },
                     enabled = isConnected && !isSyncing,
                     shape = RoundedCornerShape(16.dp)
                 ) {

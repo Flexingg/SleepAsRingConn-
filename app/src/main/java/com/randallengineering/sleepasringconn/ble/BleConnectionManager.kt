@@ -142,6 +142,12 @@ object BleConnectionManager {
     @Volatile private var lastLiveHrAt = 0L
     @Volatile private var lastLiveSpo2At = 0L
     private var lastReportedRingSteps: Int? = null
+    @Volatile private var lastFullDrainAt = 0L
+    private val rxCounts = IntArray(256)
+    private var lastHrLogAt = 0L
+    private var lastStatusLogAt = 0L
+    private var lastWriteFailLogAt = 0L
+    private var descriptorRejectLogged = false
 
     // ------------------------------------------------------------------ init / scan
 
@@ -334,7 +340,7 @@ object BleConnectionManager {
 
             val mtu = t.requestMtu(512)
             t.requestHighPriority()
-            log("MTU $mtu")
+            log("MTU $mtu, bonded ${t.isBonded}, ${t.writeModeDescription()}")
 
             val systemId = t.read(GattTransport.DEVICE_INFO_UUID, GattTransport.SYSTEM_ID_UUID)
             t.read(GattTransport.DEVICE_INFO_UUID, GattTransport.FIRMWARE_UUID)
@@ -344,8 +350,16 @@ object BleConnectionManager {
 
             val queue = Channel<ByteArray>(Channel.UNLIMITED)
             commandQueue = queue
-            val dispatcher = scope.launch { for (f in t.incoming) handleFrame(f) }
-            val writer = scope.launch { for (cmd in queue) if (!t.write(cmd)) log("Write failed: ${cmd.hex()}") }
+            val dispatcher = scope.launch {
+                for (f in t.incoming) {
+                    // One bad frame must never stop the dispatcher: everything else depends on it.
+                    try { handleFrame(f) } catch (e: Exception) {
+                        Log.e(TAG, "Frame handler failed", e)
+                        log("Frame handler error on ${f.hex()}: ${e.javaClass.simpleName} ${e.message}")
+                    }
+                }
+            }
+            val writer = scope.launch { for (cmd in queue) send(t, cmd) }
 
             try {
                 _connectionState.value = "Connected & Authenticating"
@@ -382,13 +396,13 @@ object BleConnectionManager {
             repeat(2) { attempt ->
                 val chal = CompletableDeferred<Byte>().also { authChallenge = it }
                 val confirm = CompletableDeferred<Unit>().also { authConfirm = it }
-                t.write(RingProtocol.CMD_STATUS_0)
+                send(t, RingProtocol.CMD_STATUS_0)
                 val c = withTimeoutOrNull(4_000) { chal.await() }
                 if (c == null) {
                     log("No auth challenge (attempt ${attempt + 1})")
                     return@repeat
                 }
-                t.write(RingAuth.createAuthCommand(c, mac))
+                send(t, RingAuth.createAuthCommand(c, mac))
                 if (withTimeoutOrNull(3_000) { confirm.await() } != null) {
                     log("Authenticated (challenge 0x%02X)".format(c))
                     authChallenge = null; authConfirm = null
@@ -401,6 +415,28 @@ object BleConnectionManager {
         return false
     }
 
+    /** Supervisor-side write; failures are logged (rate-limited) instead of silently ignored. */
+    private suspend fun send(t: GattTransport, cmd: ByteArray): Boolean {
+        val ok = t.write(cmd)
+        if (!ok) {
+            val now = System.currentTimeMillis()
+            if (now - lastWriteFailLogAt > 5_000) {
+                lastWriteFailLogAt = now
+                log("Write failed: ${cmd.hex()}")
+            }
+        }
+        return ok
+    }
+
+    private fun logRxSummary(windowSec: Int) {
+        val parts = ArrayList<String>()
+        synchronized(rxCounts) {
+            for (op in 0 until 256) if (rxCounts[op] > 0) parts.add("%02X x%d".format(op, rxCounts[op]))
+            rxCounts.fill(0)
+        }
+        log("RX last ${windowSec}s: ${if (parts.isEmpty()) "nothing" else parts.joinToString(", ")}")
+    }
+
     // ------------------------------------------------------------------ supervisor
 
     private suspend fun supervise(t: GattTransport) {
@@ -411,18 +447,24 @@ object BleConnectionManager {
         var lastIdleFetch = 0L
         var lastDrain = 0L
         var lastFullDrain = 0L
+        var lastRxSummary = System.currentTimeMillis()
+        var lastLiveFetch = 0L
 
         suspend fun leaveLive() {
             if (liveActive) {
-                t.write(RingProtocol.CMD_LIVE_STOP)
+                send(t, RingProtocol.CMD_LIVE_STOP)
                 liveActive = false
             }
         }
 
-        t.write(RingProtocol.CMD_FETCH) // prompt a descriptor (battery, temp, steps)
+        send(t, RingProtocol.CMD_FETCH) // prompt a descriptor (battery, temp, steps)
 
         while (t.linkUp.value) {
             val now = System.currentTimeMillis()
+            if (now - lastRxSummary >= 30_000L) {
+                logRxSummary(((now - lastRxSummary) / 1000).toInt())
+                lastRxSummary = now
+            }
 
             // 1. History drains: requested, periodic, or the frequent sleep-channel drain that
             //    feeds the Sleep as Android actigraph.
@@ -430,7 +472,9 @@ object BleConnectionManager {
             val trackingDue = sleepTracking && now - lastDrain >= TRACKING_DRAIN_MS
             if (fullDue || trackingDue) {
                 fullSyncRequested = false
-                leaveLive()
+                // Live mode is not stopped for a drain: the old, working build never did, and
+                // `06 00 00` is inferred rather than captured. Polling simply pauses.
+                liveActive = false
                 val channels = if (fullDue) {
                     listOf(RingProtocol.CHANNEL_SLEEP, RingProtocol.CHANNEL_ALL_DAY)
                 } else {
@@ -438,7 +482,7 @@ object BleConnectionManager {
                 }
                 runSync(t, channels)
                 lastDrain = System.currentTimeMillis()
-                if (fullDue) lastFullDrain = lastDrain
+                if (fullDue) { lastFullDrain = lastDrain; lastFullDrainAt = lastDrain }
                 continue
             }
 
@@ -462,16 +506,22 @@ object BleConnectionManager {
                     liveActive = true
                     liveActiveSpo2 = wantSpo2
                     liveEnteredAt = System.currentTimeMillis()
+                    lastLiveFetch = liveEnteredAt
                     lastPoll = liveEnteredAt
                 } else if (now - lastPoll >= LIVE_POLL_MS) {
-                    t.write(RingProtocol.CMD_POLL)
+                    // Every 60 s ask for a descriptor too (battery, skin temperature, steps).
+                    if (now - lastLiveFetch >= IDLE_FETCH_MS) {
+                        send(t, RingProtocol.CMD_FETCH)
+                        lastLiveFetch = now
+                    }
+                    send(t, RingProtocol.CMD_POLL)
                     lastPoll = now
                 }
                 expireStaleLiveValues(now)
             } else {
                 leaveLive()
                 if (now - lastIdleFetch >= IDLE_FETCH_MS) {
-                    t.write(RingProtocol.CMD_FETCH)
+                    send(t, RingProtocol.CMD_FETCH)
                     lastIdleFetch = now
                 }
                 expireStaleLiveValues(now)
@@ -482,11 +532,11 @@ object BleConnectionManager {
 
     private suspend fun enterLive(t: GattTransport, modeCmd: ByteArray) {
         log(if (modeCmd.contentEquals(RingProtocol.CMD_LIVE_SPO2_MODE)) "Entering live SpO2 mode" else "Entering live HR mode")
-        t.write(RingProtocol.CMD_STATUS_QUERY) // the ring wants d0 before a mode change
+        send(t, RingProtocol.CMD_STATUS_QUERY) // the ring wants d0 before a mode change
         delay(300)
-        t.write(modeCmd)
+        send(t, modeCmd)
         delay(300)
-        t.write(RingProtocol.CMD_FETCH)
+        send(t, RingProtocol.CMD_FETCH)
         lastLiveFrameAt = System.currentTimeMillis()
     }
 
@@ -509,10 +559,10 @@ object BleConnectionManager {
         var result: Int? = null
         while (System.currentTimeMillis() - mark < 45_000 && t.linkUp.value) {
             delay(LIVE_POLL_MS)
-            t.write(RingProtocol.CMD_POLL)
+            send(t, RingProtocol.CMD_POLL)
             if (lastLiveSpo2At >= mark) { result = _liveSpo2.value; break }
         }
-        t.write(RingProtocol.CMD_LIVE_STOP)
+        send(t, RingProtocol.CMD_LIVE_STOP)
         log(if (result != null) "One-shot SpO2: $result %" else "One-shot SpO2 timed out")
         return result
     }
@@ -542,7 +592,7 @@ object BleConnectionManager {
      */
     private suspend fun drainChannel(t: GattTransport, channel: Byte, inbox: Channel<ByteArray>): Int {
         val chInt = channel.toInt() and 0xFF
-        t.write(RingProtocol.createSyncUpToNowCommand(channel))
+        send(t, RingProtocol.createSyncUpToNowCommand(channel))
         var opened = false
         var emptyHint = false
         var pages = 0
@@ -557,9 +607,10 @@ object BleConnectionManager {
             if (f == null) {
                 quiet++
                 if (!opened && quiet >= 4) {
+                    log("No sync-open ack on channel 0x%02X; kicking with 07".format(chInt))
                     // Open ack lost: kick the stream anyway.
                     opened = true; quiet = 0
-                    t.write(RingProtocol.CMD_FETCH)
+                    send(t, RingProtocol.CMD_FETCH)
                     continue
                 }
                 val cap = when {
@@ -570,7 +621,7 @@ object BleConnectionManager {
                 if (quiet < cap) continue
                 if (pages > 0 && !nudged) {
                     nudged = true; quiet = 0
-                    t.write(RingProtocol.CMD_FETCH)
+                    send(t, RingProtocol.CMD_FETCH)
                     continue
                 }
                 break
@@ -580,7 +631,8 @@ object BleConnectionManager {
                 0x82 -> {
                     opened = true
                     emptyHint = f.size > 1 && f[1] == 0xFF.toByte()
-                    t.write(RingProtocol.CMD_FETCH)
+                    Log.d(TAG, "Sync open ack ch 0x%02X: %s".format(chInt, f.hex()))
+                    send(t, RingProtocol.CMD_FETCH)
                 }
                 0x4C -> {
                     val records = BulkRecord.parsePage(f)
@@ -588,20 +640,20 @@ object BleConnectionManager {
                         persistEpochs(records, chInt)
                         onEpochsPersisted(records)
                     }
-                    t.write(RingProtocol.CMD_PAGE_ACK_4C)
+                    send(t, RingProtocol.CMD_PAGE_ACK_4C)
                     pages++; epochs += records.size; nudged = false
                 }
-                0x47 -> { t.write(RingProtocol.CMD_PAGE_ACK_47); pages++; nudged = false }
+                0x47 -> { send(t, RingProtocol.CMD_PAGE_ACK_47); pages++; nudged = false }
                 0x4D -> {
                     val recs = SportRecord.parse4D(f)
-                    t.write(RingProtocol.CMD_PAGE_ACK_4D); pages++; nudged = false
+                    send(t, RingProtocol.CMD_PAGE_ACK_4D); pages++; nudged = false
                     log("Sport page: ${recs.size} records")
                 }
                 0x87, 0x10 -> {
                     // Only a genuinely new header re-kicks the stream, or we loop forever.
                     if (lastHeader == null || !f.contentEquals(lastHeader)) {
                         lastHeader = f.copyOf()
-                        t.write(RingProtocol.CMD_FETCH)
+                        send(t, RingProtocol.CMD_FETCH)
                     }
                 }
                 0x50 -> break
@@ -638,7 +690,12 @@ object BleConnectionManager {
         val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
         log("Epochs ${fmt.format(java.util.Date(sorted.first().timestampMillis))}-" +
             "${fmt.format(java.util.Date(sorted.last().timestampMillis))} (${sorted.size}), last motion ${sorted.last().motion}")
+        log("  with HR ${sorted.count { it.heartRate != null }}, HRV ${sorted.count { it.hrvRmssd != null }}, " +
+            "SpO2 ${sorted.count { it.spo2Percent != null }}, layouts ${sorted.groupingBy { it.layout.name }.eachCount()}")
         sorted.lastOrNull { it.hrvRmssd != null }?.hrvRmssd?.let { _liveHrv.value = it }
+        // Until a live reading arrives, show the newest measured values from history.
+        if (_liveHeartRate.value == null) sorted.lastOrNull { it.heartRate != null }?.heartRate?.let { _liveHeartRate.value = it }
+        if (lastLiveSpo2At == 0L) sorted.lastOrNull { it.spo2Percent != null }?.spo2Percent?.let { _liveSpo2.value = it }
         appContext?.let { ctx ->
             val levels = BulkRecord.floorSubtractedMotion(sorted).map { ActigraphTimeline.toSaaValue(it) }
             MotionSensorManager.getInstance(ctx).reportRingBatchMotions(levels)
@@ -651,6 +708,7 @@ object BleConnectionManager {
     private fun handleFrame(f: ByteArray) {
         if (f.isEmpty()) return
         val op = f[0].toInt() and 0xFF
+        synchronized(rxCounts) { rxCounts[op]++ }
         when (op) {
             0x81 -> {
                 if (f.size >= 3 && f[1] == 0x00.toByte()) authChallenge?.complete(f[2])
@@ -679,6 +737,10 @@ object BleConnectionManager {
     private fun onLiveSample(f: ByteArray) {
         lastLiveFrameAt = System.currentTimeMillis()
         LiveSample.parseHeartRate(f)?.let { onLockedHeartRate(it); return }
+        if (LiveSample.isWarmup(f) && System.currentTimeMillis() - lastHrLogAt >= 30_000L) {
+            lastHrLogAt = System.currentTimeMillis()
+            log("Live HR warming up (sensor value ${f[2].toInt() and 0xFF})")
+        }
         LiveSample.parseSpo2(f)?.let { spo2 ->
             _liveSpo2.value = spo2
             lastLiveSpo2At = System.currentTimeMillis()
@@ -687,16 +749,34 @@ object BleConnectionManager {
 
     private fun onLockedHeartRate(raw: Int) {
         if (raw !in 30..220) return
-        lastLiveHrAt = System.currentTimeMillis()
-        val hr = liveSettler.add(raw) ?: return
+        val now = System.currentTimeMillis()
+        lastLiveHrAt = now
+        val hr = liveSettler.add(raw)
+        if (now - lastHrLogAt >= 30_000L) {
+            lastHrLogAt = now
+            log("Live HR $raw bpm${if (hr == null) " (settling)" else ", settled $hr"}")
+        }
+        if (hr == null) return
         _liveHeartRate.value = hr
         HrBroadcastManager.broadcastHeartRate(hr)
         SleepAsAndroidBridge.onLiveHeartRate(hr)
     }
 
     private fun onDescriptor(f: ByteArray) {
-        val status = DeviceStatus.parse(f) ?: return
+        val status = DeviceStatus.parse(f)
+        if (status == null) {
+            if (!descriptorRejectLogged) {
+                descriptorRejectLogged = true
+                log("Status frame not decoded (${f.size} B): ${f.hex()}")
+            }
+            return
+        }
         _latestDeviceStatus.value = status
+        if (System.currentTimeMillis() - lastStatusLogAt >= 5 * 60_000L) {
+            lastStatusLogAt = System.currentTimeMillis()
+            val temp = status.skinTemperature?.let { "%.1f°C".format(it.celsius) } ?: "n/a"
+            log("Ring status: battery ${status.batteryPercent}%, skin $temp, state 0x%02X, steps ${status.quarterHourSteps}".format(status.stateByte))
+        }
         val ctx = appContext ?: return
         val prev = lastReportedRingSteps
         lastReportedRingSteps = status.quarterHourSteps
@@ -734,8 +814,13 @@ object BleConnectionManager {
         commandQueue?.trySend(cmd)
     }
 
-    /** Requests a full drain of both history channels (runs as soon as the link is free). */
-    fun syncHistory() {
+    /**
+     * Requests a full drain of both history channels (runs as soon as the link is free).
+     * Automatic callers (screens, workers) are limited to one drain per 5 minutes, since every
+     * drain pauses live HR; [force] is for the explicit "Sync" buttons.
+     */
+    fun syncHistory(force: Boolean = false) {
+        if (!force && System.currentTimeMillis() - lastFullDrainAt < 5 * 60_000L) return
         fullSyncRequested = true
         if (!_isConnected.value) ensureConnected()
     }
