@@ -60,6 +60,7 @@ fun SleepScreen() {
     var showEditDialog by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var sessionToEdit by remember { mutableStateOf<SleepSession?>(null) }
+    var sessionToDelete by remember { mutableStateOf<SleepSession?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
 
     val now = remember { System.currentTimeMillis() }
@@ -123,6 +124,15 @@ fun SleepScreen() {
                     }
                 }
             }
+        }
+
+        // Detection mode / sensitivity and manual Start/Stop
+        item {
+            SleepDetectionCard(onSessionsChanged = {
+                selectedSessionIndex = 0
+                selectedEpoch = null
+                refreshKey++
+            })
         }
 
         if (allSessions.isEmpty()) {
@@ -380,19 +390,32 @@ fun SleepScreen() {
                                         }
                                     }
 
-                                    IconButton(
-                                        onClick = {
-                                            sessionToEdit = session
-                                            showEditDialog = true
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Edit,
-                                            contentDescription = "Edit Sleep Times",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
+                                    Row {
+                                        IconButton(
+                                            onClick = {
+                                                sessionToEdit = session
+                                                showEditDialog = true
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Edit,
+                                                contentDescription = "Edit Sleep Times",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { sessionToDelete = session },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.DeleteOutline,
+                                                contentDescription = "Delete session",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
                                     }
                                 }
 
@@ -1174,6 +1197,21 @@ fun SleepScreen() {
         )
     }
 
+    sessionToDelete?.let { sess ->
+        DeleteSessionConfirmDialog(
+            onConfirm = {
+                SleepSessionManager.deleteSession(context, sess.originalStartTimeMillis)
+                sessionToDelete = null
+                if (selectedSessionIndex >= allSessions.size - 1) {
+                    selectedSessionIndex = maxOf(0, allSessions.size - 2)
+                }
+                selectedEpoch = null
+                refreshKey++
+            },
+            onDismiss = { sessionToDelete = null }
+        )
+    }
+
     if (showAddDialog) {
         AddSleepSessionDialog(
             onDismiss = { showAddDialog = false },
@@ -1701,6 +1739,33 @@ fun StageBadge(label: String, time: String, color: Color) {
 }
 
 @Composable
+fun DeleteSessionConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete Session?") },
+        text = {
+            Text(
+                "Remove this sleep session? It will no longer appear in your sleep or nap history, " +
+                    "and it is removed from Health Connect on the next sync. It won't be detected again."
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
 fun EditSleepSessionDialog(
     session: SleepSession,
     onDismiss: () -> Unit,
@@ -1719,26 +1784,12 @@ fun EditSleepSessionDialog(
     val durText = if (durHours > 0) "${durHours}h ${durMinsRem}m" else "${durMinsRem}m"
 
     if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Delete Session?") },
-            text = { Text("Are you sure you want to remove this sleep session? It will no longer appear in your sleep or nap history.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteConfirm = false
-                        onDelete()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Delete")
-                }
+        DeleteSessionConfirmDialog(
+            onConfirm = {
+                showDeleteConfirm = false
+                onDelete()
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
+            onDismiss = { showDeleteConfirm = false }
         )
     }
 

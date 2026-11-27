@@ -4,7 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.randallengineering.sleepasringconn.analytics.SleepDetectionMode
 import com.randallengineering.sleepasringconn.ble.BleConnectionManager
+import com.randallengineering.sleepasringconn.data.SleepDetectionPreferences
 import com.randallengineering.sleepasringconn.protocol.RingProtocol
 import com.randallengineering.sleepasringconn.service.RingSyncService
 import kotlinx.coroutines.CoroutineScope
@@ -50,9 +52,18 @@ class SleepAsAndroidReceiver : BroadcastReceiver() {
                 startServiceSafely(app)
                 BleConnectionManager.ensureConnected()
                 SleepAsAndroidBridge.handleStartTracking(app, doHr, doOxi)
+                // In manual detection mode, Sleep as Android's tracking defines the session
+                if (SleepDetectionPreferences.getMode(app) == SleepDetectionMode.MANUAL) {
+                    SleepDetectionPreferences.startManualSession(app)
+                }
             }
 
-            SleepAsAndroidBridge.ACTION_STOP_TRACKING -> SleepAsAndroidBridge.handleStopTracking(app)
+            SleepAsAndroidBridge.ACTION_STOP_TRACKING -> {
+                SleepAsAndroidBridge.handleStopTracking(app)
+                if (SleepDetectionPreferences.getMode(app) == SleepDetectionMode.MANUAL) {
+                    SleepDetectionPreferences.stopManualSession(app)
+                }
+            }
 
             SleepAsAndroidBridge.ACTION_SET_BATCH_SIZE -> {
                 val size = intent.getLongExtra(SleepAsAndroidBridge.EXTRA_SIZE, -1L)
