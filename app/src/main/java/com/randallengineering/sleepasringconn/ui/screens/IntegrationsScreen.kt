@@ -82,6 +82,9 @@ fun IntegrationsScreen() {
             }
         }
 
+        // App updates from GitHub Releases
+        item { AppUpdateCard() }
+
         // 1. Health Connect Integration Card
         item {
             var isAutoSync by remember { mutableStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.isAutoSyncEnabled(context)) }
