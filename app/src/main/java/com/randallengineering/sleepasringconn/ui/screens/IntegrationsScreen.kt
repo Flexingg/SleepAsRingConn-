@@ -82,6 +82,9 @@ fun IntegrationsScreen() {
             }
         }
 
+        // App updates from GitHub Releases
+        item { AppUpdateCard() }
+
         // 1. Health Connect Integration Card
         item {
             var isAutoSync by remember { mutableStateOf(com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.isAutoSyncEnabled(context)) }
@@ -227,28 +230,13 @@ fun IntegrationsScreen() {
                                         scope.launch {
                                             isSyncingToHC = true
                                             withContext(Dispatchers.IO) {
-                                                val unsynced = database.epochDao().getUnsyncedEpochs()
-                                                val written = healthConnectManager.writeEpochs(unsynced)
-                                                val sessions = com.randallengineering.sleepasringconn.data.SleepSessionManager.getProcessedSessions(context, unsynced)
-                                                for (s in sessions) {
-                                                    try { healthConnectManager.writeSleepSession(s) } catch (e: Exception) { e.printStackTrace() }
+                                                val total = try {
+                                                    com.randallengineering.sleepasringconn.healthconnect.HealthConnectExporter
+                                                        .exportAll(context, healthConnectManager).total
+                                                } catch (e: Exception) {
+                                                    e.printStackTrace()
+                                                    0
                                                 }
-                                                if (unsynced.isNotEmpty()) {
-                                                    database.epochDao().markSynced(unsynced.map { it.counter })
-                                                }
-                                                val unsyncedDbSessions = database.sleepSessionDao().getUnsyncedSessions()
-                                                for (dbSession in unsyncedDbSessions) {
-                                                    try {
-                                                        healthConnectManager.writeSleepSessionEntity(dbSession)
-                                                        database.sleepSessionDao().markSynced(dbSession.startTimeMillis)
-                                                    } catch (e: Exception) {
-                                                        e.printStackTrace()
-                                                    }
-                                                }
-                                                val recentStatus = database.deviceStatusDao().getRecentStatusLogsList(50)
-                                                val tempCount = healthConnectManager.writeSkinTemperatures(recentStatus)
-                                                val stepCount = healthConnectManager.writeSteps(recentStatus)
-                                                val total = written + tempCount + stepCount + sessions.size + unsyncedDbSessions.size
                                                 com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.recordSyncResult(
                                                     context,
                                                     "Exported $total records",
