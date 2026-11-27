@@ -2,7 +2,10 @@ package com.randallengineering.sleepasringconn.data
 
 import android.content.Context
 import com.randallengineering.sleepasringconn.analytics.SleepSession
+import com.randallengineering.sleepasringconn.analytics.SleepDetectionMode
 import com.randallengineering.sleepasringconn.analytics.SleepStagingEngine
+import com.randallengineering.sleepasringconn.healthconnect.HealthConnectExporter
+import com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler
 import com.randallengineering.sleepasringconn.protocol.BulkRecord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,6 +25,37 @@ data class SessionOverride(
 object SleepSessionManager {
     private const val PREFS_NAME = "sleep_session_overrides_pref"
     private const val KEY_OVERRIDES = "session_overrides_json"
+    private const val MATCH_TOLERANCE_MS = 45 * 60 * 1000L
+
+    /** Index of the override whose original start is closest to [start] (within tolerance), or -1. */
+    private fun closestOverride(overrides: List<SessionOverride>, start: Long): Int {
+        var best = -1
+        var bestDiff = Long.MAX_VALUE
+        for ((i, ov) in overrides.withIndex()) {
+            val diff = abs(ov.originalStartTimeMillis - start)
+            if (diff < MATCH_TOLERANCE_MS && diff < bestDiff) {
+                best = i
+                bestDiff = diff
+            }
+        }
+        return best
+    }
+
+    /**
+     * Called after anything that changes which sessions exist or their times: makes the next
+     * Health Connect export rewrite them (so deleted sessions are removed there too) and, when
+     * auto-sync is on, runs that export now.
+     */
+    fun onSessionsChanged(context: Context, affectedStartMillis: Long?) {
+        HealthConnectExporter.invalidateSleep(context, affectedStartMillis)
+        if (HealthConnectSyncScheduler.isAutoSyncEnabled(context)) {
+            try {
+                HealthConnectSyncScheduler.triggerImmediateSync(context)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     fun getOverrides(context: Context): List<SessionOverride> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -72,7 +106,7 @@ object SleepSessionManager {
         isNap: Boolean? = null
     ) {
         val current = getOverrides(context).toMutableList()
-        val matchIndex = current.indexOfFirst { abs(it.originalStartTimeMillis - originalStart) < 45 * 60 * 1000L }
+        val matchIndex = closestOverride(current, originalStart)
         val override = SessionOverride(
             originalStartTimeMillis = if (matchIndex >= 0) current[matchIndex].originalStartTimeMillis else originalStart,
             startTimeMillis = newStart,
@@ -87,17 +121,23 @@ object SleepSessionManager {
             current.add(override)
         }
         saveOverrides(context, current)
+        onSessionsChanged(context, minOf(originalStart, newStart))
     }
 
     fun resetSessionEdit(context: Context, originalStart: Long) {
         val current = getOverrides(context).toMutableList()
-        current.removeAll { abs(it.originalStartTimeMillis - originalStart) < 45 * 60 * 1000L }
-        saveOverrides(context, current)
+        val matchIndex = closestOverride(current, originalStart)
+        if (matchIndex >= 0) {
+            val existing = current[matchIndex]
+            current.removeAt(matchIndex)
+            saveOverrides(context, current)
+            onSessionsChanged(context, minOf(originalStart, existing.startTimeMillis))
+        }
     }
 
     fun deleteSession(context: Context, originalStart: Long) {
         val current = getOverrides(context).toMutableList()
-        val matchIndex = current.indexOfFirst { abs(it.originalStartTimeMillis - originalStart) < 45 * 60 * 1000L }
+        val matchIndex = closestOverride(current, originalStart)
         if (matchIndex >= 0) {
             val existing = current[matchIndex]
             if (existing.isManualAddition) {
@@ -116,6 +156,7 @@ object SleepSessionManager {
             )
         }
         saveOverrides(context, current)
+        onSessionsChanged(context, originalStart)
     }
 
     fun addManualSession(
@@ -136,6 +177,7 @@ object SleepSessionManager {
             )
         )
         saveOverrides(context, current)
+        onSessionsChanged(context, startTime)
     }
 
     suspend fun getProcessedSessions(
@@ -144,7 +186,10 @@ object SleepSessionManager {
         persist: Boolean = true
     ): List<SleepSession> = withContext(Dispatchers.Default) {
         val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-        val autoSessions = SleepStagingEngine.extractAllSleepSessions(bulkRecords)
+        val mode = SleepDetectionPreferences.getMode(context)
+        // Manual mode: only sessions the user recorded, added or edited are kept
+        val autoSessions = if (mode == SleepDetectionMode.MANUAL) emptyList()
+            else SleepStagingEngine.extractAllSleepSessions(bulkRecords, SleepDetectionPreferences.getConfig(context))
         val overrides = getOverrides(context)
 
         val finalSessions = mutableListOf<SleepSession>()
@@ -152,9 +197,7 @@ object SleepSessionManager {
 
         // Apply overrides to auto-detected sessions
         for (session in autoSessions) {
-            val matchIdx = overrides.indexOfFirst {
-                abs(it.originalStartTimeMillis - session.startTimeMillis) < 45 * 60 * 1000L
-            }
+            val matchIdx = closestOverride(overrides, session.startTimeMillis)
 
             if (matchIdx >= 0) {
                 matchedOverrideIndices.add(matchIdx)

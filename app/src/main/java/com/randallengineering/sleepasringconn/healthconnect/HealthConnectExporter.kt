@@ -49,7 +49,7 @@ object HealthConnectExporter {
     }
 
     private const val LEAD_IN_MS = 12L * 60 * 60 * 1000L
-    private const val KEY_HISTORY_DONE = "key_sleep_history_export_v3"
+    private const val KEY_HISTORY_DONE = "key_sleep_history_export_v4"
 
     /**
      * Returns the number of sleep sessions written (0 when nothing changed).
@@ -122,6 +122,23 @@ object HealthConnectExporter {
             }
         }
         return written
+    }
+
+    /**
+     * Forces the next export to rewrite this app's sleep records, so a deleted, added or edited
+     * session (or a detection-setting change) reaches Health Connect. The last 30 days are
+     * rewritten every time the sessions change; when [affectedStartMillis] is older than that,
+     * or null (every session may have changed), the older history is rewritten once too.
+     */
+    fun invalidateSleep(context: Context, affectedStartMillis: Long?) {
+        val prefs = HealthConnectSyncScheduler.getPreferences(context)
+        val editor = prefs.edit().remove(KEY_SLEEP_FINGERPRINT)
+        // One day of slack: the history pass covers sessions *starting* before the recent window
+        val recentStart = System.currentTimeMillis() - SLEEP_WINDOW_MS + 24L * 60 * 60 * 1000L
+        if (affectedStartMillis == null || affectedStartMillis < recentStart) {
+            editor.remove(KEY_HISTORY_DONE)
+        }
+        editor.apply()
     }
 
     /**

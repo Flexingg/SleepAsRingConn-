@@ -141,10 +141,28 @@ class ProtocolTest {
     }
 
     @Test
-    fun testBulkRecord_badMarkerRejected() {
+    fun testBulkRecord_futureTimestampRejected() {
+        // raw[0] is the counter's high byte, not a marker (0x0D is valid from 2026-11-28), so
+        // only implausible timestamps are rejected: here 0xFFFFFFFF s after the epoch (~2156).
+        val bytes = ByteArray(23)
+        for (i in 0..3) bytes[i] = 0xFF.toByte()
+        assertNull(BulkRecord.parseRecord(bytes))
+    }
+
+    @Test
+    fun testBulkRecord_counterHighByteIsNotAMarker() {
+        // A record from 2026-11-28 onwards starts with 0x0D and must still parse
         val bytes = ByteArray(23)
         bytes[0] = 0x0D
-        assertNull(BulkRecord.parseRecord(bytes))
+        val counter = 0x0D000000L
+        val ts = counter + com.randallengineering.sleepasringconn.protocol.RingProtocol.SYNC_EPOCH
+        val record = BulkRecord.parseRecord(bytes)
+        if (ts <= System.currentTimeMillis() / 1000L + 86_400L) {
+            assertNotNull(record)
+            assertEquals(ts, record!!.timestampEpochSeconds)
+        } else {
+            assertNull(record)
+        }
     }
 
     @Test

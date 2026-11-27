@@ -96,8 +96,14 @@ object SleepStagingEngine {
      * Extracts and stages all sleep sessions across the provided records (e.g. past 7-30 days),
      * including overnight sleep sessions and daytime naps, sorted with newest first.
      * Multiple sleep sessions per day are naturally supported via continuous physiological segmentation.
+     *
+     * [config] guards against false positives: time the ring wasn't worn (no heart-rate lock) and,
+     * during the day, quiet rest whose heart rate never drops toward the user's sleeping level.
      */
-    fun extractAllSleepSessions(records: List<BulkRecord>): List<SleepSession> {
+    fun extractAllSleepSessions(
+        records: List<BulkRecord>,
+        config: SleepDetectionConfig = SleepDetectionConfig.DEFAULT
+    ): List<SleepSession> {
         val nonIdle = records
             .filter { it.layout != BulkRecordLayout.IDLE }
             .sortedBy { it.timestampMillis }
@@ -137,6 +143,12 @@ object SleepStagingEngine {
             }
         }
 
+        // A real optical heart-rate lock means the ring is on a finger. Off the finger (on a
+        // desk, nightstand or charger) it reports no HR or zero confidence, which looks "calm".
+        fun isWorn(i: Int): Boolean = nonIdle[i].heartRate != null && nonIdle[i].confidence > 0
+        val requireWorn = config.minWornFraction > 0.0
+        fun canStart(i: Int): Boolean = isResting(i) && (!requireWorn || isWorn(i))
+
         // 2. Continuous timeline cluster detection (segments overnight sleep and naps separately)
         val rawSessions = mutableListOf<SleepSession>()
         var idx = 0
@@ -148,7 +160,7 @@ object SleepStagingEngine {
             var startCandidate = -1
 
             for (i in idx until n) {
-                if (isResting(i)) {
+                if (canStart(i)) {
                     if (runCount == 0) startCandidate = i
                     runCount++
                     if (runCount >= 3) break
@@ -178,6 +190,7 @@ object SleepStagingEngine {
 
             var lastSleepIdx = startCandidate + runCount - 1
             var wakeCount = 0
+            var noHrRun = 0
             var endClusterIdx = lastSleepIdx
 
             // Scan forward through candidate sleep
@@ -189,6 +202,10 @@ object SleepStagingEngine {
                 if (r.timestampMillis - prev.timestampMillis > 35 * 60 * 1000L) {
                     break
                 }
+
+                // Ring taken off: a long stretch with no heart-rate lock ends the session
+                if (isWorn(j)) noHrRun = 0 else noHrRun++
+                if (noHrRun >= config.maxNoHrRunEpochs) break
 
                 if (isResting(j)) {
                     lastSleepIdx = j
@@ -205,15 +222,26 @@ object SleepStagingEngine {
                 endClusterIdx = j
             }
 
-            // End boundary is exactly the last resting sleep epoch
-            val offsetIdx = lastSleepIdx
+            // End boundary is exactly the last resting sleep epoch (and, when the ring must be
+            // worn, the last one with a heart-rate lock, so a ring set down after waking up
+            // doesn't stretch the session)
+            var offsetIdx = lastSleepIdx
+            if (requireWorn) {
+                while (offsetIdx > startCandidate && !isWorn(offsetIdx)) offsetIdx--
+            }
             val clusterRecords = nonIdle.subList(onsetIdx, offsetIdx + 1)
 
             val restingCount = (onsetIdx..offsetIdx).count { isResting(it) }
             val estimatedSleepMinutes = restingCount * 5 / 2
+            val clusterSize = offsetIdx - onsetIdx + 1
+            val wornFraction = (onsetIdx..offsetIdx).count { isWorn(it) }.toDouble() / clusterSize
+            val motionless = config.rejectMotionless && clusterSize >= 12 &&
+                (onsetIdx..offsetIdx).count { nonIdle[it].motionMagnitude == 0 } >= clusterSize * 0.98
 
-            // Require at least 12 minutes of actual sleep
-            if (estimatedSleepMinutes >= 12 && clusterRecords.size >= 5) {
+            // Require at least 12 minutes of actual sleep, with the ring actually worn
+            if (estimatedSleepMinutes >= 12 && clusterRecords.size >= 5 &&
+                wornFraction >= config.minWornFraction && !motionless
+            ) {
                 val session = stageSessionWindow(clusterRecords, floorHr = floorHr, medianHr = medianHr)
                 if (session != null && session.sleepDurationMinutes >= 12) {
                     rawSessions.add(session)
@@ -244,7 +272,28 @@ object SleepStagingEngine {
             consolidated.add(sess)
         }
 
-        return consolidated.sortedByDescending { it.startTimeMillis }
+        // 4. Daytime sessions need stronger evidence than overnight ones: sitting still on the
+        // couch looks like sleep to motion alone, but heart rate stays at its awake-resting level.
+        return consolidated
+            .filter { passesDaytimeChecks(it, floorHr, config) }
+            .sortedByDescending { it.startTimeMillis }
+    }
+
+    /** True when the session's midpoint falls in the daytime (see [SleepDetectionConfig]). */
+    fun isDaytime(session: SleepSession): Boolean {
+        val mid = session.startTimeMillis + (session.endTimeMillis - session.startTimeMillis) / 2
+        val hour = Calendar.getInstance().apply { timeInMillis = mid }.get(Calendar.HOUR_OF_DAY)
+        return hour >= SleepDetectionConfig.DAY_START_HOUR && hour < SleepDetectionConfig.DAY_END_HOUR
+    }
+
+    internal fun passesDaytimeChecks(session: SleepSession, floorHr: Int, config: SleepDetectionConfig): Boolean {
+        if (!isDaytime(session)) return true
+        if (config.overnightOnly) return false
+        if (session.sleepDurationMinutes < config.daytimeMinSleepMinutes) return false
+        val maxAbove = config.daytimeMaxHrAboveFloor ?: return true
+        val hrs = session.epochs.mapNotNull { it.heartRate }.sorted()
+        if (hrs.isEmpty()) return config.minWornFraction <= 0.0
+        return hrs[hrs.size / 2] <= floorHr + maxAbove
     }
 
     const val MAX_DAY_MERGE_GAP_MS = 20 * 60 * 1000L
