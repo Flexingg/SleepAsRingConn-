@@ -100,29 +100,8 @@ class RingSyncService : Service() {
 
                     // Sync unsynced records to Health Connect
                     try {
-                        val unsynced = database.epochDao().getUnsyncedEpochs()
-                        if (unsynced.isNotEmpty()) {
-                            healthConnectManager.writeEpochs(unsynced)
-                            val sessions = com.randallengineering.sleepasringconn.data.SleepSessionManager.getProcessedSessions(this@RingSyncService, unsynced)
-                            for (s in sessions) {
-                                try { healthConnectManager.writeSleepSession(s) } catch (e: Exception) { e.printStackTrace() }
-                            }
-                            database.epochDao().markSynced(unsynced.map { it.counter })
-                        }
-                        val unsyncedDbSessions = database.sleepSessionDao().getUnsyncedSessions()
-                        for (dbSession in unsyncedDbSessions) {
-                            try {
-                                healthConnectManager.writeSleepSessionEntity(dbSession)
-                                database.sleepSessionDao().markSynced(dbSession.startTimeMillis)
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
-                        val recentStatus = database.deviceStatusDao().getRecentStatusLogsList(50)
-                        if (recentStatus.isNotEmpty()) {
-                            healthConnectManager.writeSkinTemperatures(recentStatus)
-                            healthConnectManager.writeSteps(recentStatus)
-                        }
+                        com.randallengineering.sleepasringconn.healthconnect.HealthConnectExporter
+                            .exportAll(this@RingSyncService, healthConnectManager)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }

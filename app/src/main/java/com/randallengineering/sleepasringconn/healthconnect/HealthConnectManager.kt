@@ -5,13 +5,13 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.*
 import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Temperature
 import com.randallengineering.sleepasringconn.analytics.SleepSession
 import com.randallengineering.sleepasringconn.analytics.SleepStage
 import com.randallengineering.sleepasringconn.data.DeviceStatusEntity
 import com.randallengineering.sleepasringconn.data.EpochEntity
-import com.randallengineering.sleepasringconn.data.SleepSessionEntity
 import java.time.Instant
 import java.time.ZoneOffset
 
@@ -237,19 +237,16 @@ class HealthConnectManager(private val context: Context) {
         val startInstant = Instant.ofEpochMilli(session.startTimeMillis)
         val endInstant = Instant.ofEpochMilli(session.endTimeMillis)
 
-        val stages = session.epochs.map { epoch ->
-            val stageStartTime = Instant.ofEpochMilli(epoch.timestampMillis)
-            val stageEndTime = Instant.ofEpochMilli(epoch.timestampMillis + 150_000L)
-            val stageType = when (epoch.stage) {
-                SleepStage.AWAKE -> SleepSessionRecord.STAGE_TYPE_AWAKE
-                SleepStage.LIGHT -> SleepSessionRecord.STAGE_TYPE_LIGHT
-                SleepStage.DEEP -> SleepSessionRecord.STAGE_TYPE_DEEP
-                SleepStage.REM -> SleepSessionRecord.STAGE_TYPE_REM
-            }
+        val stages = SleepExportPlanner.buildStages(session).map { span ->
             SleepSessionRecord.Stage(
-                startTime = stageStartTime,
-                endTime = stageEndTime,
-                stage = stageType
+                startTime = Instant.ofEpochMilli(span.startMillis),
+                endTime = Instant.ofEpochMilli(span.endMillis),
+                stage = when (span.stage) {
+                    SleepStage.AWAKE -> SleepSessionRecord.STAGE_TYPE_AWAKE
+                    SleepStage.LIGHT -> SleepSessionRecord.STAGE_TYPE_LIGHT
+                    SleepStage.DEEP -> SleepSessionRecord.STAGE_TYPE_DEEP
+                    SleepStage.REM -> SleepSessionRecord.STAGE_TYPE_REM
+                }
             )
         }
 
@@ -268,23 +265,12 @@ class HealthConnectManager(private val context: Context) {
         return true
     }
 
-    suspend fun writeSleepSessionEntity(entity: SleepSessionEntity): Boolean {
-        val client = healthConnectClient ?: return false
-
-        val startInstant = Instant.ofEpochMilli(entity.startTimeMillis)
-        val endInstant = Instant.ofEpochMilli(entity.endTimeMillis)
-
-        val sleepRecord = SleepSessionRecord(
-            startTime = startInstant,
-            startZoneOffset = ZoneOffset.systemDefault().rules.getOffset(startInstant),
-            endTime = endInstant,
-            endZoneOffset = ZoneOffset.systemDefault().rules.getOffset(endInstant),
-            title = if (entity.isNap) "Nap (RingConn Gen 2)" else entity.sessionLabel,
-            notes = "Recorded with SleepAsRingConn (Local First)",
-            metadata = Metadata(clientRecordId = "ringconn_sleep_${entity.startTimeMillis}")
+    /** Deletes this app's own sleep sessions in [fromMillis, toMillis); other apps' data is untouched. */
+    suspend fun deleteOwnSleepSessions(fromMillis: Long, toMillis: Long) {
+        val client = healthConnectClient ?: return
+        client.deleteRecords(
+            SleepSessionRecord::class,
+            TimeRangeFilter.between(Instant.ofEpochMilli(fromMillis), Instant.ofEpochMilli(toMillis))
         )
-
-        client.insertRecords(listOf(sleepRecord))
-        return true
     }
 }
