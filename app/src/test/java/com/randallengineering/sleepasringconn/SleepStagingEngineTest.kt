@@ -310,6 +310,41 @@ class SleepStagingEngineTest {
         assertTrue("Duration should reflect both sleep periods (~7h)", session.sleepDurationMinutes in 390..450)
     }
 
+    private fun at(hour: Int, minute: Int = 0): Long = Calendar.getInstance().apply {
+        set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, minute)
+        set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+
+    @Test
+    fun testNightWakeUpUnderAnHourDoesNotSplitNight() {
+        val records = mutableListOf<BulkRecord>()
+        // 23:00 - 02:00 asleep
+        val start = at(23) - 24 * 3600_000L
+        for (i in 0 until 72) records.add(createRecord(start + i * 150_000L, heartRate = 55, motion = 1))
+        // 45 min awake and moving around (02:00 - 02:45)
+        val wake = start + 72 * 150_000L
+        for (i in 0 until 18) records.add(createRecord(wake + i * 150_000L, heartRate = 82, motion = 12))
+        // 02:45 - 06:45 asleep again
+        val back = wake + 18 * 150_000L
+        for (i in 0 until 96) records.add(createRecord(back + i * 150_000L, heartRate = 54, motion = 1))
+
+        val sessions = SleepStagingEngine.extractAllSleepSessions(records)
+        assertEquals("A 45-minute wake-up at 2 AM should stay one night", 1, sessions.size)
+        assertFalse(sessions.first().isNap)
+    }
+
+    @Test
+    fun testMergeGapRule() {
+        // Short gaps always merge, overlapping blocks too.
+        assertTrue(SleepStagingEngine.shouldMergeAcrossGap(at(14), at(14, 15)))
+        assertTrue(SleepStagingEngine.shouldMergeAcrossGap(at(14), at(13, 55)))
+        // 45-min gap: merges at night, not in the afternoon.
+        assertTrue(SleepStagingEngine.shouldMergeAcrossGap(at(2), at(2, 45)))
+        assertFalse(SleepStagingEngine.shouldMergeAcrossGap(at(14), at(14, 45)))
+        // Over an hour never merges.
+        assertFalse(SleepStagingEngine.shouldMergeAcrossGap(at(2), at(3, 30)))
+    }
+
     @Test
     fun testRingOnboardActigraphyDecoding() {
         // Complete stillness / deep sleep (raw bytes: 5 x baseline 18, 5 x 0 pulses)

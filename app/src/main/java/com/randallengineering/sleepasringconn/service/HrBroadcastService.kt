@@ -133,7 +133,7 @@ class HrBroadcastService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(content)
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setSmallIcon(com.randallengineering.sleepasringconn.R.drawable.ic_stat_sleep_ring)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Broadcast", stopPendingIntent)
             .setOngoing(true)

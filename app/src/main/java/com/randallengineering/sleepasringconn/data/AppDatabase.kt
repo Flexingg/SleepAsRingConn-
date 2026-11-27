@@ -36,6 +36,9 @@ interface EpochDao {
     @Query("SELECT * FROM epoch_records ORDER BY timestampMillis DESC LIMIT 1")
     suspend fun getLatestEpoch(): EpochEntity?
 
+    @Query("SELECT MIN(timestampMillis) FROM epoch_records")
+    suspend fun getEarliestTimestamp(): Long?
+
     @Query("SELECT COUNT(*) FROM epoch_records")
     fun getCount(): Flow<Int>
 }

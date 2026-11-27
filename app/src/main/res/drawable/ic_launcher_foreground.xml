@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A sleeping smart ring under a crescent moon -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- crescent moon -->
+    <path
+        android:fillColor="#FFFFD98A"
+        android:pathData="M40,26a9,9 0,1 0,9 12a7.2,7.2 0,1 1,-9 -12z" />
+    <!-- inner back wall of the ring, seen through the hole -->
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M36,59a18,12.5 0,1 1,36 0a18,12.5 0,1 1,-36 0z M36,64a18,12.5 0,1 1,36 0a18,12.5 0,1 1,-36 0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="46"
+                android:endX="54" android:endY="77">
+                <item android:offset="0" android:color="#FF5A4BB0" />
+                <item android:offset="1" android:color="#FF9A8DE0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- ring band -->
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M31,62a23,18 0,1 0,46 0a23,18 0,1 0,-46 0z M36,59a18,12.5 0,1 1,36 0a18,12.5 0,1 1,-36 0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="44"
+                android:endX="54" android:endY="80">
+                <item android:offset="0" android:color="#FFF4F1FF" />
+                <item android:offset="0.55" android:color="#FFC9C0F2" />
+                <item android:offset="1" android:color="#FF8E7FD8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- highlight -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeAlpha="0.75"
+        android:strokeWidth="1.3"
+        android:strokeLineCap="round"
+        android:pathData="M34,66q3,7 10,10" />
+    <!-- closed eyes -->
+    <path
+        android:strokeColor="#FF2A1F6E"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:pathData="M46.5,74.5q2.75,2.4 5.5,0 M56,74.5q2.75,2.4 5.5,0" />
+    <!-- blush -->
+    <path
+        android:fillColor="#FFFF9EC4"
+        android:fillAlpha="0.6"
+        android:pathData="M41.7,77a1.8,1 0,1 0,3.6 0a1.8,1 0,1 0,-3.6 0z M62.7,77a1.8,1 0,1 0,3.6 0a1.8,1 0,1 0,-3.6 0z" />
+    <!-- Zz -->
+    <path
+        android:strokeColor="#FFE9E4FF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M61,34h6.5l-6.5,7.5h6.5" />
+    <path
+        android:strokeColor="#FFE9E4FF"
+        android:strokeAlpha="0.8"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M70.5,27h4.5l-4.5,5h4.5" />
+</vector>

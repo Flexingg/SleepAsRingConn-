@@ -230,21 +230,24 @@ fun IntegrationsScreen() {
                                         scope.launch {
                                             isSyncingToHC = true
                                             withContext(Dispatchers.IO) {
+                                                var error: String? = null
                                                 val total = try {
                                                     com.randallengineering.sleepasringconn.healthconnect.HealthConnectExporter
                                                         .exportAll(context, healthConnectManager).total
                                                 } catch (e: Exception) {
                                                     e.printStackTrace()
+                                                    error = e.message ?: e.javaClass.simpleName
                                                     0
                                                 }
+                                                val message = error?.let { "Sync error: $it" } ?: "Exported $total records"
                                                 com.randallengineering.sleepasringconn.healthconnect.HealthConnectSyncScheduler.recordSyncResult(
                                                     context,
-                                                    "Exported $total records",
+                                                    message,
                                                     total
                                                 )
                                                 unsyncedCount = database.epochDao().getUnsyncedEpochs().size
                                                 lastSyncTime = System.currentTimeMillis()
-                                                lastStatus = "Exported $total records"
+                                                lastStatus = message
                                             }
                                             isSyncingToHC = false
                                         }
@@ -260,6 +263,8 @@ fun IntegrationsScreen() {
                                 }
                             }
                         }
+
+                        HealthConnectSleepTools(healthConnectManager)
                     }
                 }
             }
