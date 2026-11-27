@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon: the sleeping ring and moon as a white silhouette -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="53"
+        android:scaleX="1.8"
+        android:scaleY="1.8">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M40,26a9,9 0,1 0,9 12a7.2,7.2 0,1 1,-9 -12z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M31,62a23,18 0,1 0,46 0a23,18 0,1 0,-46 0z M36,59a18,12.5 0,1 1,36 0a18,12.5 0,1 1,-36 0z" />
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="2.6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M61,34h6.5l-6.5,7.5h6.5" />
+    </group>
+</vector>

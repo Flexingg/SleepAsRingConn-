@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="SleepAsRingConn icon: a sleeping ring under a crescent moon"></p>
+
 # SleepAsRingConn 💍💤
 
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg?style=flat&logo=kotlin)](https://kotlinlang.org)
@@ -168,6 +170,7 @@ SleepAsRingConn/
 
 - **Every pull request**: the *PR Build & Auto-merge* workflow runs the unit tests, builds the APK, and comments on the PR with a download link. Once the PR is marked **Ready for review** and the build passes, it is merged automatically. Drafts are never auto-merged.
 - **Every merge to `main`**: the *Build & Release APK* workflow publishes a GitHub Release (`build-N`) with the APK attached. Grab it from **Releases → Latest**.
+- **Rebuilding Health Connect sleep**: *Integrations → Health Connect* lists which apps wrote the sleep sessions Health Connect holds for the last 30 days, and **Rebuild sleep history** deletes every sleep session this app wrote there and exports the whole stored history again, one session per night.
 - **In-app updates**: *Integrations → App Updates* checks the latest GitHub Release when you open the screen (or tap refresh), downloads the APK and hands it to the Android installer. The first time, Android asks you to allow *Install unknown apps* for SleepAsRingConn.
 - All builds are signed with the same key (`app/signing/sideload.keystore`) and carry an increasing versionCode, so each new APK installs over the previous one and keeps your data. The key is for sideloading; its password is in `app/build.gradle.kts` and is not a secret.
 

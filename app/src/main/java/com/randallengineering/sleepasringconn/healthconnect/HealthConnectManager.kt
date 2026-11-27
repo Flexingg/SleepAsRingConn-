@@ -265,6 +265,31 @@ class HealthConnectManager(private val context: Context) {
         return true
     }
 
+    /**
+     * Counts sleep sessions in Health Connect over [fromMillis, toMillis) per app that wrote
+     * them, so it's visible whether broken-up nights come from this app or another one.
+     */
+    suspend fun sleepSessionCountsBySource(fromMillis: Long, toMillis: Long): Map<String, Int> {
+        val client = healthConnectClient ?: return emptyMap()
+        val counts = mutableMapOf<String, Int>()
+        var pageToken: String? = null
+        do {
+            val response = client.readRecords(
+                androidx.health.connect.client.request.ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(Instant.ofEpochMilli(fromMillis), Instant.ofEpochMilli(toMillis)),
+                    pageToken = pageToken
+                )
+            )
+            for (r in response.records) {
+                val pkg = r.metadata.dataOrigin.packageName
+                counts[pkg] = (counts[pkg] ?: 0) + 1
+            }
+            pageToken = response.pageToken
+        } while (pageToken != null)
+        return counts
+    }
+
     /** Deletes this app's own sleep sessions in [fromMillis, toMillis); other apps' data is untouched. */
     suspend fun deleteOwnSleepSessions(fromMillis: Long, toMillis: Long) {
         val client = healthConnectClient ?: return

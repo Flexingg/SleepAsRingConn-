@@ -140,7 +140,8 @@ object SleepSessionManager {
 
     suspend fun getProcessedSessions(
         context: Context,
-        epochEntities: List<EpochEntity>
+        epochEntities: List<EpochEntity>,
+        persist: Boolean = true
     ): List<SleepSession> = withContext(Dispatchers.Default) {
         val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
         val autoSessions = SleepStagingEngine.extractAllSleepSessions(bulkRecords)
@@ -193,8 +194,8 @@ object SleepSessionManager {
 
         val sorted = finalSessions.sortedByDescending { it.startTimeMillis }
 
-        // Sync into Room DB for Goals and Health Connect
-        try {
+        // Sync into Room DB for Goals (skipped for one-off history exports)
+        if (persist) try {
             val database = AppDatabase.getDatabase(context)
             val entities = sorted.map { s ->
                 SleepSessionEntity(

@@ -224,11 +224,13 @@ object SleepStagingEngine {
             idx = maxOf(idx + 1, offsetIdx + 1)
         }
 
-        // 3. Consolidate sessions with very short awakenings (< 20 min) between them
+        // 3. Consolidate sessions split by an awakening. Any time of day, a gap of up to 20 min
+        // is one sleep; during the night (gap centred between 21:00 and 09:00) a wake-up of up
+        // to an hour (bathroom, baby, restless spell) still belongs to the same night.
         val consolidated = mutableListOf<SleepSession>()
-        for (sess in rawSessions) {
+        for (sess in rawSessions.sortedBy { it.startTimeMillis }) {
             val last = consolidated.lastOrNull()
-            if (last != null && sess.startTimeMillis - last.endTimeMillis in 0..(20 * 60 * 1000L)) {
+            if (last != null && shouldMergeAcrossGap(last.endTimeMillis, sess.startTimeMillis)) {
                 // Merge into previous session
                 val combinedRecords = nonIdle.filter {
                     it.timestampMillis in last.startTimeMillis..sess.endTimeMillis
@@ -243,6 +245,19 @@ object SleepStagingEngine {
         }
 
         return consolidated.sortedByDescending { it.startTimeMillis }
+    }
+
+    const val MAX_DAY_MERGE_GAP_MS = 20 * 60 * 1000L
+    const val MAX_NIGHT_MERGE_GAP_MS = 60 * 60 * 1000L
+
+    /** True when two sleep blocks separated by [prevEnd, nextStart] are one sleep. */
+    fun shouldMergeAcrossGap(prevEnd: Long, nextStart: Long): Boolean {
+        val gap = nextStart - prevEnd
+        if (gap <= MAX_DAY_MERGE_GAP_MS) return true // includes touching / overlapping blocks
+        if (gap > MAX_NIGHT_MERGE_GAP_MS) return false
+        val midHour = Calendar.getInstance().apply { timeInMillis = prevEnd + gap / 2 }
+            .get(Calendar.HOUR_OF_DAY)
+        return midHour >= 21 || midHour < 9
     }
 
     /**
