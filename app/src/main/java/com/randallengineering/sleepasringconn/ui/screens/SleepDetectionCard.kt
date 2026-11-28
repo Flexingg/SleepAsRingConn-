@@ -163,10 +163,11 @@ fun SleepDetectionCard(onSessionsChanged: () -> Unit) {
                     }
                 }
                 Text(
-                    if (mode == SleepDetectionMode.MANUAL)
-                        "When Sleep as Android starts and stops tracking, a session is recorded for that time."
-                    else
-                        "Changing these updates your past sessions and, on the next sync, Health Connect.",
+                    (if (mode == SleepDetectionMode.MANUAL)
+                        "When Sleep as Android starts and stops tracking, a session is recorded for that time. "
+                    else "") +
+                        "Changes apply from now on; sessions already recorded stay as they are. " +
+                        "Delete any wrong ones with the 🗑 button.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
