@@ -35,7 +35,9 @@ It decodes all biometric telemetry on-device without cloud dependencies, writes 
 - **🛏️ Sleep Detection Controls** (Sleep tab → *Sleep detection*):
   - **Modes**: *Automatic* (nights + naps), *Overnight only* (no daytime auto-detection), or *Manual* (only sessions you record with **Start/Stop sleep**, add, or that Sleep as Android tracking starts and stops).
   - **Sensitivity**: *Relaxed*, *Balanced* (default) or *Strict*. Balanced ignores time the ring wasn't worn (no heart-rate lock) and only counts a daytime nap when heart rate drops close to your sleeping level. Strict also needs 30+ min naps and rejects a ring lying perfectly still.
-  - **Delete** a wrong session from the 🗑 button on its card. It stays deleted (it won't be detected again) and is removed from Health Connect on the next sync.
+  - Changing the mode or sensitivity only affects sessions from that moment on; sessions already recorded keep the settings they were detected with.
+  - **Delete** a wrong session from the 🗑 button on its card or in the *Longitudinal Trends* history list.
+  - A deleted session stays deleted (it won't be detected again) and is removed from Health Connect on the next sync.
 - **🌙 Sleep as Android DIY Wearable Bridge**:
   - Responds to `com.urbandroid.sleep.watch.CHECK_CONNECTED` with `CONFIRM_CONNECTED` (and reconnects the ring if it is asked while disconnected).
   - Rebuilds a continuous 10-second actigraph (`DATA_UPDATE` / `MAX_RAW_DATA`) from the ring's 30-second motion counts. See [How the Sleep as Android stream works](#-how-the-sleep-as-android-stream-works).

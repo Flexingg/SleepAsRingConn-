@@ -1105,6 +1105,7 @@ fun SleepScreen() {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
+                                    modifier = Modifier.weight(1f),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1149,6 +1150,14 @@ fun SleepScreen() {
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = if (sess.isNap) Color(0xFFFFA000) else SleepPurple
+                                    )
+                                }
+
+                                IconButton(onClick = { sessionToDelete = sess }) {
+                                    Icon(
+                                        Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete session",
+                                        tint = MaterialTheme.colorScheme.error
                                     )
                                 }
                             }

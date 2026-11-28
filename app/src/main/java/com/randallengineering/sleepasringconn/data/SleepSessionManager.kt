@@ -180,16 +180,47 @@ object SleepSessionManager {
         onSessionsChanged(context, startTime)
     }
 
+    /**
+     * Detects sessions using, for each one, the settings in effect when it started, so a mode
+     * or sensitivity change only affects sessions from then on. Manual periods detect nothing.
+     */
+    internal fun detectWithSettingsHistory(
+        records: List<BulkRecord>,
+        history: List<DetectionSettingsEntry>
+    ): List<SleepSession> {
+        if (records.isEmpty()) return emptyList()
+        val firstData = records.minOf { it.timestampMillis }
+        val lastData = records.maxOf { it.timestampMillis }
+        val found = mutableListOf<SleepSession>()
+        val cache = mutableMapOf<com.randallengineering.sleepasringconn.analytics.SleepDetectionConfig, List<SleepSession>>()
+        for ((i, entry) in history.withIndex()) {
+            val from = entry.fromMillis
+            val until = history.getOrNull(i + 1)?.fromMillis ?: Long.MAX_VALUE
+            if (entry.mode == SleepDetectionMode.MANUAL) continue
+            if (until <= firstData || from > lastData) continue // no data in this period
+            val all = cache.getOrPut(entry.config) {
+                SleepStagingEngine.extractAllSleepSessions(records, entry.config)
+            }
+            found += all.filter { it.startTimeMillis >= from && it.startTimeMillis < until }
+        }
+        // Around a change, sessions found under the old and new settings can overlap: keep the
+        // one that started first.
+        val kept = mutableListOf<SleepSession>()
+        for (s in found.sortedBy { it.startTimeMillis }) {
+            val last = kept.lastOrNull()
+            if (last != null && s.startTimeMillis < last.endTimeMillis) continue
+            kept.add(s)
+        }
+        return kept.sortedByDescending { it.startTimeMillis }
+    }
+
     suspend fun getProcessedSessions(
         context: Context,
         epochEntities: List<EpochEntity>,
         persist: Boolean = true
     ): List<SleepSession> = withContext(Dispatchers.Default) {
         val bulkRecords = epochEntities.mapNotNull { BulkRecord.parseRecord(it.rawBytes) }
-        val mode = SleepDetectionPreferences.getMode(context)
-        // Manual mode: only sessions the user recorded, added or edited are kept
-        val autoSessions = if (mode == SleepDetectionMode.MANUAL) emptyList()
-            else SleepStagingEngine.extractAllSleepSessions(bulkRecords, SleepDetectionPreferences.getConfig(context))
+        val autoSessions = detectWithSettingsHistory(bulkRecords, SleepDetectionPreferences.getHistory(context))
         val overrides = getOverrides(context)
 
         val finalSessions = mutableListOf<SleepSession>()
